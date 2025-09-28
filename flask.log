@@ -1,0 +1,27 @@
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:6000
+ * Running on http://192.168.0.184:6000
+[33mPress CTRL+C to quit[0m
+100.77.103.61 - - [26/Sep/2025 16:24:27] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [26/Sep/2025 16:44:11] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [26/Sep/2025 17:29:03] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [26/Sep/2025 18:11:09] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [26/Sep/2025 18:28:30] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [26/Sep/2025 23:36:40] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [26/Sep/2025 23:53:22] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 01:04:46] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 01:20:30] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 01:22:31] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 01:23:02] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 01:26:53] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 01:31:54] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 02:13:18] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 17:13:49] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 17:15:50] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.77.103.61 - - [27/Sep/2025 22:52:55] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.124.194.124 - - [28/Sep/2025 20:47:11] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
+100.124.194.124 - - [28/Sep/2025 22:38:45] "[35m[1mPOST /add_todo HTTP/1.1[0m" 201 -
+100.124.194.124 - - [28/Sep/2025 22:39:27] "[35m[1mPOST /add_note HTTP/1.1[0m" 201 -
