@@ -85,100 +85,144 @@ st.set_page_config(page_title="Ideas & ToDos", layout="centered")
 st.title("📝 My Think Tank")
 
 
-# --- To-Do Section ---
-st.header("✅ To-Do List")
+
+import categorize_ideas  # Your separate script
+# categorize_ideas.main()
+
+tabs = st.tabs(["To-Do & Ideas", "Categorized Ideas"])
+
+with tabs[0]:
+    # --- To-Do Section ---
+    st.header("✅ To-Do List")
 
 
-with st.form("add_todo_form", clear_on_submit=True):
-    new_todo = st.text_input("New Task", placeholder="Enter your task here...")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"], index=1)
-    submitted = st.form_submit_button("➕ Add To-Do")
+    with st.form("add_todo_form", clear_on_submit=True):
+        new_todo = st.text_input("New Task", placeholder="Enter your task here...")
+        priority = st.selectbox("Priority", ["High", "Medium", "Low"], index=1)
+        submitted = st.form_submit_button("➕ Add To-Do")
 
-    if submitted and new_todo.strip():
+        if submitted and new_todo.strip():
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            VANCOUVER_TZ = pytz.timezone("America/Vancouver")
+            created_timestamp = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+            cursor.execute(
+                "INSERT INTO todo (content, priority, timestamp) VALUES (?, ?, ?)",
+                (new_todo.strip(), priority, created_timestamp),
+            )
+            conn.commit()
+            conn.close()
+            st.success(f"✅ Added task: {new_todo}")
+            st.rerun()
+
+
+
+
+    todos_df = get_todos()
+
+    if not todos_df.empty:
+        # Filter DataFrame for each priority level
+        high_priority = todos_df[todos_df["priority"] == "High"]
+        medium_priority = todos_df[todos_df["priority"] == "Medium"]
+        low_priority = todos_df[todos_df["priority"] == "Low"]
+
+        # Display each priority section in order
+        display_todos(high_priority, "🔴 High Priority")
+        display_todos(medium_priority, "🟡 Medium Priority")
+        display_todos(low_priority, "🟢 Low Priority")
+
+    else:
+        st.success("All tasks are complete! Great job.")
+
+    def get_completed_todos():
         conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        VANCOUVER_TZ = pytz.timezone("America/Vancouver")
-        created_timestamp = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute(
-            "INSERT INTO todo (content, priority, timestamp) VALUES (?, ?, ?)",
-            (new_todo.strip(), priority, created_timestamp),
-        )
-        conn.commit()
+        df = pd.read_sql_query("SELECT * FROM completed_todo ORDER BY completed_timestamp DESC", conn)
         conn.close()
-        st.success(f"✅ Added task: {new_todo}")
-        st.rerun()
+        return df
+    st.header("🏁 Completed Tasks")
+    completed_df = get_completed_todos()
+
+    if not completed_df.empty:
+        completed_df["timestamp"] = pd.to_datetime(completed_df["timestamp"])
+        completed_df["completed_timestamp"] = pd.to_datetime(completed_df["completed_timestamp"])
+        completed_df["time_to_complete"] = completed_df["completed_timestamp"] - completed_df["timestamp"]
+
+        for _, row in completed_df.iterrows():
+            time_in_days = row["time_to_complete"].total_seconds() / (24*3600)
+            with st.container():
+                st.markdown(
+                    f"✅ **{row['content']}**  \n"
+                    f"<span style='color:gray; font-size:0.85em;'>"
+                    f"Added {row['timestamp']} • Completed {row['completed_timestamp']}  \n"
+                    f"⏱ Took {time_in_days:.1f} days</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown("---")
+
+        avg_time = completed_df["time_to_complete"].mean()
+        avg_days = avg_time.total_seconds() / (24*3600)
+
+        st.success(f"⏳ Average completion time: {avg_days:.1f} days")
+    else:
+        st.info("No tasks completed yet.")
 
 
 
 
-todos_df = get_todos()
+    # --- Ideas Section ---
+    st.header("💡 Ideas")
+    ideas_df = get_ideas()
 
-if not todos_df.empty:
-    # Filter DataFrame for each priority level
-    high_priority = todos_df[todos_df["priority"] == "High"]
-    medium_priority = todos_df[todos_df["priority"] == "Medium"]
-    low_priority = todos_df[todos_df["priority"] == "Low"]
-
-    # Display each priority section in order
-    display_todos(high_priority, "🔴 High Priority")
-    display_todos(medium_priority, "🟡 Medium Priority")
-    display_todos(low_priority, "🟢 Low Priority")
-
-else:
-    st.success("All tasks are complete! Great job.")
-
-def get_completed_todos():
-    conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM completed_todo ORDER BY completed_timestamp DESC", conn)
-    conn.close()
-    return df
-st.header("🏁 Completed Tasks")
-completed_df = get_completed_todos()
-
-if not completed_df.empty:
-    completed_df["timestamp"] = pd.to_datetime(completed_df["timestamp"])
-    completed_df["completed_timestamp"] = pd.to_datetime(completed_df["completed_timestamp"])
-    completed_df["time_to_complete"] = completed_df["completed_timestamp"] - completed_df["timestamp"]
-
-    for _, row in completed_df.iterrows():
-        time_in_days = row["time_to_complete"].total_seconds() / (24*3600)
-        with st.container():
-            st.markdown(
-                f"✅ **{row['content']}**  \n"
-                f"<span style='color:gray; font-size:0.85em;'>"
-                f"Added {row['timestamp']} • Completed {row['completed_timestamp']}  \n"
-                f"⏱ Took {time_in_days:.1f} days</span>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("---")
-
-    avg_time = completed_df["time_to_complete"].mean()
-    avg_days = avg_time.total_seconds() / (24*3600)
-
-    st.success(f"⏳ Average completion time: {avg_days:.1f} days")
-else:
-    st.info("No tasks completed yet.")
+    if not ideas_df.empty:
+        for _, row in ideas_df.iterrows():
+            with st.container():
+                st.write(row['content'])
+                st.markdown(
+                    # f"**{row['content']}**  \n"
+                    f"<span style='color:gray; font-size:0.85em;'>Added {row['timestamp']}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown("---")
+    else:
+        st.info("No ideas captured yet. Add one!")
 
 
+with tabs[1]:
+    st.header("📊 Categorized Ideas")
 
+    # Run categorization (optional: you can add a button to refresh instead)
+    # categorize_ideas.main()
 
-# --- Ideas Section ---
-st.header("💡 Ideas")
-ideas_df = get_ideas()
+    # Load categorized ideas from DB
+    def load_categorized_ideas():
+        conn = sqlite3.connect("notes.db")
+        df = pd.read_sql_query("SELECT * FROM ideas_categorized ORDER BY id DESC", conn)
+        conn.close()
+        return df
 
-if not ideas_df.empty:
-    for _, row in ideas_df.iterrows():
-        with st.container():
-            st.markdown(
-                f"**{row['content']}**  \n"
-                f"<span style='color:gray; font-size:0.85em;'>Added {row['timestamp']}</span>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("---")
-else:
-    st.info("No ideas captured yet. Add one!")
-
-
-
-
+    df = load_categorized_ideas()
+    
+    if not df.empty:
+        for cat in df['category_label'].unique():
+            # Category title (big & colored)
+            st.markdown(f"<h2 style='color:#1f77b4'>{cat}</h2>", unsafe_allow_html=True)
+            
+            cat_df = df[df['category_label'] == cat]
+            for _, row in cat_df.iterrows():
+                # Box for each note
+                st.markdown(f"""
+                <div style="
+                    border: 1px solid #ccc; 
+                    border-radius: 8px; 
+                    padding: 10px; 
+                    margin-bottom: 10px; 
+                    background-color:#333333;
+                ">
+                    <p style='margin:0'>{row['content']}</p>
+                    <span style='color:gray; font-size:0.85em;'></span>
+                </div>
+                """, unsafe_allow_html=True)               
+                # st.markdown("---")
+    else:
+        st.info("No categorized ideas found. Add ideas first!")
