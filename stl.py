@@ -87,6 +87,31 @@ st.title("📝 My Think Tank")
 
 # --- To-Do Section ---
 st.header("✅ To-Do List")
+
+
+with st.form("add_todo_form", clear_on_submit=True):
+    new_todo = st.text_input("New Task", placeholder="Enter your task here...")
+    priority = st.selectbox("Priority", ["High", "Medium", "Low"], index=1)
+    submitted = st.form_submit_button("➕ Add To-Do")
+
+    if submitted and new_todo.strip():
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        VANCOUVER_TZ = pytz.timezone("America/Vancouver")
+        created_timestamp = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            "INSERT INTO todo (content, priority, timestamp) VALUES (?, ?, ?)",
+            (new_todo.strip(), priority, created_timestamp),
+        )
+        conn.commit()
+        conn.close()
+        st.success(f"✅ Added task: {new_todo}")
+        st.rerun()
+
+
+
+
 todos_df = get_todos()
 
 if not todos_df.empty:
