@@ -4,9 +4,43 @@ import pandas as pd
 from datetime import datetime
 import pytz
 import categorize_ideas  # Your categorization script
+from openai import OpenAI
+import os
+from dotenv import load_dotenv
+import json
+load_dotenv()  # this loads .env into os.environ
+
+
+# -------------------- BUILT-IN LIBRARIES --------------------
+import os
+import sqlite3
+import json
+from datetime import datetime
+import pytz
+
+# -------------------- THIRD-PARTY LIBRARIES --------------------
+import streamlit as st
+import pandas as pd
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# -------------------- LOCAL FILES --------------------
+import categorize_ideas  # your categorization script
+
+# -------------------- SETUP --------------------
+load_dotenv()  # loads .env file so OPENAI_API_KEY is available
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+
 
 DB_PATH = "notes.db"
 VANCOUVER_TZ = pytz.timezone("America/Vancouver")
+
+
+  # picks up key from env
+client = OpenAI()
 
 # ---------------- DATABASE HELPERS ----------------
 
@@ -54,19 +88,33 @@ def display_todos(df, title):
     df = df.sort_values(by="timestamp", ascending=False)
     for _, row in df.iterrows():
         with st.container():
-            col1, col2 = st.columns([0.1, 0.9])
+            col1, col2, col3 = st.columns([0.1, 0.75, 0.15])
+
+            # Checkbox for completing task
             with col1:
                 if st.checkbox(label=row["content"], key=f"todo_{row['id']}", label_visibility="collapsed"):
                     delete_todo([row["id"], row['content'], row['priority'], row['timestamp']])
                     st.rerun()
+
+            # Task content + timestamp
             with col2:
                 st.markdown(
-                    f"**{row['content']}**  \n"
+                    f"**{row['content']}**  \n"
                     f"<span style='color:gray; font-size:0.85em;'>Added {row['timestamp']}</span>",
                     unsafe_allow_html=True,
                 )
-        st.markdown("---")
 
+            # Delete button
+            with col3:
+                if st.button("🗑️ Delete", key=f"delete_{row['id']}"):
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM todo WHERE id = ?", (row['id'],))
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+
+        st.markdown("---")
 def load_categorized_ideas():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM ideas_categorized ORDER BY id DESC", conn)
@@ -78,7 +126,7 @@ def load_categorized_ideas():
 st.set_page_config(page_title="Ideas & ToDos", layout="centered")
 st.title("📝 My Think Tank")
 
-tabs = st.tabs(["To-Do & Ideas", "Categorized Ideas"])
+tabs = st.tabs(["To-Do & Ideas", "Ideas", "Search"])
 
 # ---------------- TAB 1: To-Do & Ideas ----------------
 with tabs[0]:
@@ -98,24 +146,21 @@ with tabs[0]:
                 "INSERT INTO todo (content, priority, timestamp) VALUES (?, ?, ?)",
                 (new_todo.strip(), priority, created_timestamp),
             )
-            # Also insert as an idea for categorization
-            cursor.execute(
-                "INSERT INTO ideas (content, timestamp) VALUES (?, ?)",
-                (new_todo.strip(), created_timestamp),
-            )
+            
             conn.commit()
             conn.close()
 
-            # Automatically categorize all ideas
-            # categorize_ideas.categorize_ideas()
-
+            
             st.success(f"✅ Added task/idea: {new_todo}")
             st.rerun()
 
     # --- Display To-Dos ---
     todos_df = get_todos()
     if not todos_df.empty:
-        for prio, title in zip(["High", "Medium", "Low"], ["🔴 High Priority", "🟡 Medium Priority", "🟢 Low Priority"]):
+        for prio, title in zip(
+            ["High", "Medium", "Low"],
+            ["🔴 High Priority", "🟡 Medium Priority", "🟢 Low Priority"]
+        ):
             display_todos(todos_df[todos_df["priority"] == prio], title)
     else:
         st.success("All tasks are complete! Great job.")
@@ -128,39 +173,39 @@ with tabs[0]:
         completed_df["completed_timestamp"] = pd.to_datetime(completed_df["completed_timestamp"])
         completed_df["time_to_complete"] = completed_df["completed_timestamp"] - completed_df["timestamp"]
 
+        # Display each completed task
         for _, row in completed_df.iterrows():
             time_in_days = row["time_to_complete"].total_seconds() / (24*3600)
             st.markdown(
                 f"✅ **{row['content']}**  \n"
                 f"<span style='color:gray; font-size:0.85em;'>"
                 f"Added {row['timestamp']} • Completed {row['completed_timestamp']}  \n"
-                f"⏱ Took {time_in_days:.1f} days</span>",
+                f"⏱ Took {time_in_days:.1f} days • Priority: {row['priority']}</span>",
                 unsafe_allow_html=True,
             )
             st.markdown("---")
 
-        avg_time = completed_df["time_to_complete"].mean()
-        avg_days = avg_time.total_seconds() / (24*3600)
-        st.success(f"⏳ Average completion time: {avg_days:.1f} days")
+        # Compute average per priority
+        avg_times = (
+            completed_df.groupby("priority")["time_to_complete"]
+            .mean()
+            .apply(lambda x: x.total_seconds() / (24*3600))
+        )
+
+        # Show averages nicely
+        st.subheader("📊 Average Completion Time by Priority")
+        for prio, days in avg_times.items():
+            color = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(prio, "⚪")
+            st.success(f"{color} {prio} Priority: {days:.1f} days")
+
     else:
         st.info("No tasks completed yet.")
 
-    # --- Ideas Section ---
-    # st.header("💡 Ideas")
-    # ideas_df = get_ideas()
-    # if not ideas_df.empty:
-    #     for _, row in ideas_df.iterrows():
-    #         st.write(row['content'])
-    #         st.markdown(
-    #             f"<span style='color:gray; font-size:0.85em;'>Added {row['timestamp']}</span>",
-    #             unsafe_allow_html=True,
-    #         )
-    #         st.markdown("---")
-    # else:
-    #     st.info("No ideas captured yet. Add one!")
-    # --- Ideas Section (Grouped by Day) ---
-# --- Ideas Section (Grouped by Day, Keep Time) ---
+# ---------------- TAB 2: Categorized Ideas ----------------
+with tabs[1]:
     st.header("💡 Ideas")
+    
+
 
     ideas_df = get_ideas()
     if not ideas_df.empty:
@@ -178,27 +223,70 @@ with tabs[0]:
             st.markdown("---")
     else:
         st.info("No ideas captured yet. Add one!")
-# # ---------------- TAB 2: Categorized Ideas ----------------
-# with tabs[1]:
-#     st.header("📊 Categorized Ideas")
-#     df = load_categorized_ideas()
-    
-#     if not df.empty:
-#         for cat in df['category_label'].unique():
-#             st.markdown(f"<h2 style='color:#1f77b4'>{cat}</h2>", unsafe_allow_html=True)
-#             cat_df = df[df['category_label'] == cat]
-#             for _, row in cat_df.iterrows():
-#                 st.markdown(f"""
-#                 <div style="
-#                     border: 1px solid #ccc; 
-#                     border-radius: 8px; 
-#                     padding: 10px; 
-#                     margin-bottom: 10px; 
-#                     background-color:#333333; color:white;
-#                 ">
-#                     <p style='margin:0'>{row['content']}</p>
-#                     <span style='color:gray; font-size:0.85em;'>Added {row['timestamp']}</span>
-#                 </div>
-#                 """, unsafe_allow_html=True)
-#     else:
-#         st.info("No categorized ideas found. Add ideas first!")
+
+
+
+def ensure_embeddings_column():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Check if column exists
+    cursor.execute("PRAGMA table_info(ideas)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "embedding" not in columns:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN embedding TEXT")
+        conn.commit()
+
+    # Find rows missing embeddings
+    cursor.execute("SELECT id, content FROM ideas WHERE embedding IS NULL")
+    rows = cursor.fetchall()
+
+    for idea_id, content in rows:
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=content
+        )
+        emb = response.data[0].embedding
+        cursor.execute(
+            "UPDATE ideas SET embedding=? WHERE id=?",
+            (json.dumps(emb), idea_id)
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def semantic_search(query, top_k=5):
+    # Embed query
+    q_emb = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=query
+    ).data[0].embedding
+    q_vec = np.array(q_emb).reshape(1, -1)
+
+    # Load rows
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, content, embedding FROM ideas WHERE embedding IS NOT NULL")
+    rows = cursor.fetchall()
+    conn.close()
+
+    similarities = []
+    for idea_id, content, emb_str in rows:
+        emb = np.array(json.loads(emb_str)).reshape(1, -1)
+        score = cosine_similarity(q_vec, emb)[0][0]
+        similarities.append((score, idea_id, content))
+
+    similarities.sort(reverse=True, key=lambda x: x[0])
+    return similarities[:top_k]
+
+with tabs[2]:
+    st.header("🔍 Semantic Search")
+    query = st.text_input("Search your notes...")
+
+    ensure_embeddings_column()  # make sure everything has embeddings
+
+    if query:
+        results = semantic_search(query)
+        for score, idea_id, content in results:
+            st.write(f"**{content}** (similarity: {score:.2f})")
