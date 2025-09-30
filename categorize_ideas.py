@@ -1,16 +1,17 @@
 import sqlite3
 import pandas as pd
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from sklearn.preprocessing import normalize
 import torch
+import streamlit as st
 
 # ---------------- CONFIG ----------------
 DB_PATH = "notes.db"
 EMBEDDING_MODEL = "all-mpnet-base-v2"
 BATCH_SIZE = 128
 
-# Predefined categories with example ideas
 CATEGORY_EXAMPLES = {
     "Misc": ["Random thoughts", "Uncategorized ideas", "General musings"],
     "Tech / Experiments": ["Try a new microcontroller project", "Build a home automation setup", "Experiment with IoT devices"],
@@ -26,24 +27,15 @@ CATEGORY_LABELS = list(CATEGORY_EXAMPLES.keys())
 # ---------------- FUNCTIONS ----------------
 
 def load_ideas():
-    """Load ideas from the SQLite database."""
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT id, content FROM ideas", conn)
+    df = pd.read_sql_query("SELECT id, content, timestamp FROM ideas", conn)  # Include timestamp
     conn.close()
     return df
 
 def get_embeddings(model, texts):
-    """Compute embeddings efficiently on CPU using a shared model instance."""
-    embeddings = model.encode(
-        texts,
-        batch_size=BATCH_SIZE,
-        show_progress_bar=True,
-        convert_to_numpy=True
-    )
-    return embeddings
+    return model.encode(texts, batch_size=BATCH_SIZE, show_progress_bar=False, convert_to_numpy=True)
 
 def compute_category_embeddings(model):
-    """Compute mean embedding for each category from example ideas."""
     cat_embeddings = []
     for examples in CATEGORY_EXAMPLES.values():
         emb = model.encode(examples, batch_size=BATCH_SIZE, convert_to_numpy=True)
@@ -52,49 +44,39 @@ def compute_category_embeddings(model):
     return np.vstack(cat_embeddings)
 
 def assign_to_categories(idea_embeddings, category_embeddings):
-    """Assign each idea to the closest predefined category."""
+    # Normalize to improve cosine similarity
+    idea_embeddings = normalize(idea_embeddings)
+    category_embeddings = normalize(category_embeddings)
     sims = cosine_similarity(idea_embeddings, category_embeddings)
     closest = np.argmax(sims, axis=1)
     return closest
 
 def save_categorized(df):
-    """Save categorized ideas to SQLite."""
     conn = sqlite3.connect(DB_PATH)
     df.to_sql("ideas_categorized", conn, if_exists="replace", index=False)
     conn.close()
 
-
-
-
 # ---------------- MAIN ----------------
-
-def main():
-    # Force CPU device
-    device = torch.device("cpu")
+# Cache model so it isn't reloaded every time
+@st.cache_resource
+def load_model():
     model = SentenceTransformer(EMBEDDING_MODEL)
-    model.to(device)
+    model.to(torch.device("cpu"))
+    return model
 
-    df = load_ideas()
+def categorize_ideas():
+    model = load_model()
+    df = load_ideas()  # Make sure load_ideas() also fetches timestamp
     if df.empty:
-        print("No ideas found in the database.")
-        return
+        return pd.DataFrame(columns=["id", "content", "timestamp", "category_label"])
 
-    print(f"Loaded {len(df)} ideas.")
-
-    print("Computing embeddings for ideas...")
     idea_embeddings = get_embeddings(model, df['content'].tolist())
-
-    print("Computing embeddings for predefined categories...")
     category_embeddings = compute_category_embeddings(model)
-
-    print("Assigning each idea to the closest category...")
     assigned_idx = assign_to_categories(idea_embeddings, category_embeddings)
     df['category_label'] = [CATEGORY_LABELS[i] for i in assigned_idx]
 
-    print("Saving categorized ideas to DB...")
-    save_categorized(df)
+    # Only keep the columns needed for Streamlit UI
+    df_categorized = df[['id', 'content', 'timestamp', 'category_label']]
 
-
-
-if __name__ == "__main__":
-    main()
+    save_categorized(df_categorized)
+    return df_categorized
