@@ -124,7 +124,7 @@ def load_categorized_ideas():
 # ---------------- STREAMLIT APP ----------------
 
 st.set_page_config(page_title="Ideas & ToDos", layout="centered")
-st.title("📝 My Think Tank")
+st.title("Think Tank")
 
 tabs = st.tabs(["To-Do & Ideas", "Ideas", "Search"])
 
