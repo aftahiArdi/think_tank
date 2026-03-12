@@ -1,16 +1,3 @@
-import streamlit as st
-import sqlite3
-import pandas as pd
-from datetime import datetime
-import pytz
-import categorize_ideas  # Your categorization script
-from openai import OpenAI
-import os
-from dotenv import load_dotenv
-import json
-load_dotenv()  # this loads .env into os.environ
-
-
 # -------------------- BUILT-IN LIBRARIES --------------------
 import os
 import sqlite3
@@ -26,29 +13,66 @@ from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# -------------------- LOCAL FILES --------------------
-import categorize_ideas  # your categorization script
+# categorize_ideas is intentionally not imported here — it requires
+# heavy ML dependencies (torch, sentence-transformers) and is run manually.
 
 # -------------------- SETUP --------------------
 load_dotenv()  # loads .env file so OPENAI_API_KEY is available
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
-
+client = OpenAI()
 
 DB_PATH = "notes.db"
 VANCOUVER_TZ = pytz.timezone("America/Vancouver")
 
-
-  # picks up key from env
-client = OpenAI()
-
 # ---------------- DATABASE HELPERS ----------------
+
+def migrate_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    for table in ("todo", "completed_todo"):
+        cursor.execute(f"PRAGMA table_info({table})")
+        cols = [col[1] for col in cursor.fetchall()]
+        if cols and "size" not in cols:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN size TEXT DEFAULT 'small'")
+        if table == "completed_todo" and cols and "completed_timestamp" not in cols:
+            cursor.execute("ALTER TABLE completed_todo ADD COLUMN completed_timestamp DATETIME")
+    conn.commit()
+    conn.close()
+
+migrate_db()
 
 def get_ideas():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM ideas ORDER BY timestamp DESC", conn)
     conn.close()
     return df
+
+SIZE_ORDER = {'project': 4, 'big': 3, 'small': 2, 'tiny': 1}
+
+SIZE_PILL = {
+    'tiny':    ("<span style='background:#6c757d; color:white; padding:2px 8px; "
+                "border-radius:12px; font-size:0.72em; font-weight:600; letter-spacing:0.03em;'>TINY</span>"),
+    'small':   ("<span style='background:#0d6efd; color:white; padding:2px 8px; "
+                "border-radius:12px; font-size:0.72em; font-weight:600; letter-spacing:0.03em;'>SMALL</span>"),
+    'big':     ("<span style='background:#e67e22; color:white; padding:2px 8px; "
+                "border-radius:12px; font-size:0.72em; font-weight:600; letter-spacing:0.03em;'>BIG</span>"),
+    'project': ("<span style='background:#6f42c1; color:white; padding:2px 8px; "
+                "border-radius:12px; font-size:0.72em; font-weight:600; letter-spacing:0.03em;'>PROJECT</span>"),
+}
+
+STALENESS_BORDER = {
+    'fresh':  '#2ecc71',  # green  — 0-2 days
+    'aging':  '#e67e22',  # orange — 3-6 days
+    'stale':  '#c0392b',  # red    — 7+ days
+}
+
+def staleness_key(days_old):
+    if days_old >= 7:
+        return 'stale'
+    elif days_old >= 3:
+        return 'aging'
+    return 'fresh'
+
+SIZE_LABEL = {'tiny': 'Tiny', 'small': 'Small', 'big': 'Big', 'project': 'Project'}
 
 def get_todos():
     conn = sqlite3.connect(DB_PATH)
@@ -62,59 +86,81 @@ def get_completed_todos():
     conn.close()
     return df
 
-def delete_todo(todo_info):
+def complete_todo(todo_info):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    id, content, priority, created_timestamp = todo_info
+    id, content, size, created_timestamp = todo_info
+    if hasattr(created_timestamp, 'strftime'):
+        created_timestamp = created_timestamp.strftime("%Y-%m-%d %H:%M:%S")
     completed_timestamp = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
     cursor.execute('''
-        INSERT INTO completed_todo (id, content, priority, timestamp, completed_timestamp)
+        INSERT INTO completed_todo (id, content, size, timestamp, completed_timestamp)
         VALUES (?, ?, ?, ?, ?)
-    ''', (id, content, priority, created_timestamp, completed_timestamp))
-
+    ''', (id, content, size, created_timestamp, completed_timestamp))
     cursor.execute("DELETE FROM todo WHERE id = ?", (id,))
     conn.commit()
     conn.close()
 
+
+def get_focus_todos(df, n=5):
+    if df.empty:
+        return df
+    now = datetime.now(VANCOUVER_TZ)
+    df = df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["days_old"] = df["timestamp"].apply(
+        lambda t: (now - VANCOUVER_TZ.localize(t)).days if t.tzinfo is None else (now - t).days
+    )
+    df["size_weight"] = df["size"].map(SIZE_ORDER).fillna(2)
+    df = df.sort_values(by=["days_old", "size_weight"], ascending=False)
+    return df.head(n)
+
 # ---------------- UI HELPERS ----------------
 
-def display_todos(df, title):
-    st.subheader(title)
+def display_todos(df, key_prefix=""):
     if df.empty:
-        st.write(f"_No {title.split(' ')[1].lower()} tasks. 🎉_")
+        st.success("All clear!")
         return
 
-    df = df.sort_values(by="timestamp", ascending=False)
+    now = datetime.now(VANCOUVER_TZ)
+    df = df.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["days_old"] = df["timestamp"].apply(
+        lambda t: (now - VANCOUVER_TZ.localize(t)).days if t.tzinfo is None else (now - t).days
+    )
+    df["size_weight"] = df["size"].map(SIZE_ORDER).fillna(2)
+    df = df.sort_values(by=["days_old", "size_weight"], ascending=False)
+
     for _, row in df.iterrows():
-        with st.container():
-            col1, col2, col3 = st.columns([0.1, 0.75, 0.15])
+        days_old = int(row["days_old"])
+        size = row.get("size") or "small"
+        age_label = f"{days_old}d old" if days_old > 0 else "today"
+        border_color = STALENESS_BORDER[staleness_key(days_old)]
+        pill = SIZE_PILL.get(size, SIZE_PILL['small'])
 
-            # Checkbox for completing task
-            with col1:
-                if st.checkbox(label=row["content"], key=f"todo_{row['id']}", label_visibility="collapsed"):
-                    delete_todo([row["id"], row['content'], row['priority'], row['timestamp']])
-                    st.rerun()
+        st.markdown(
+            f"<div style='border-left: 4px solid {border_color}; padding-left: 12px; margin-bottom: 4px;'>"
+            f"<strong>{row['content']}</strong><br>"
+            f"<span style='font-size:0.8em; color:gray;'>{age_label}</span>&nbsp;&nbsp;{pill}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
-            # Task content + timestamp
-            with col2:
-                st.markdown(
-                    f"**{row['content']}**  \n"
-                    f"<span style='color:gray; font-size:0.85em;'>Added {row['timestamp']}</span>",
-                    unsafe_allow_html=True,
-                )
+        col1, col2 = st.columns([0.85, 0.15])
+        with col1:
+            if st.checkbox("Mark complete", key=f"{key_prefix}todo_{row['id']}", label_visibility="collapsed"):
+                complete_todo([row["id"], row["content"], size, row["timestamp"]])
+                st.rerun()
+        with col2:
+            if st.button("🗑️", key=f"{key_prefix}delete_{row['id']}"):
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM todo WHERE id = ?", (row["id"],))
+                conn.commit()
+                conn.close()
+                st.rerun()
 
-            # Delete button
-            with col3:
-                if st.button("🗑️ Delete", key=f"delete_{row['id']}"):
-                    conn = sqlite3.connect(DB_PATH)
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM todo WHERE id = ?", (row['id'],))
-                    conn.commit()
-                    conn.close()
-                    st.rerun()
-
-        st.markdown("---")
+        st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
 def load_categorized_ideas():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM ideas_categorized ORDER BY id DESC", conn)
@@ -123,19 +169,34 @@ def load_categorized_ideas():
 
 # ---------------- STREAMLIT APP ----------------
 
-st.set_page_config(page_title="Ideas & ToDos", layout="centered")
+st.set_page_config(page_title="Think Tank", layout="centered")
 st.title("Think Tank")
 
-tabs = st.tabs(["To-Do & Ideas", "Ideas", "Search"])
+tabs = st.tabs(["Focus", "All Tasks", "Ideas", "Search"])
 
-# ---------------- TAB 1: To-Do & Ideas ----------------
+# ---------------- TAB 1: Focus ----------------
 with tabs[0]:
-    st.header("✅ To-Do List")
+    st.header("🎯 Focus — Your Top 5")
+
+    todos_df = get_todos()
+    focus_df = get_focus_todos(todos_df, n=5)
+
+    if focus_df.empty:
+        st.success("Nothing to do. You're clear!")
+    else:
+        remaining = max(0, len(todos_df) - len(focus_df))
+        if remaining > 0:
+            st.caption(f"{remaining} more tasks in the backlog — just focus on these.")
+        display_todos(focus_df, key_prefix="focus_")
+
+# ---------------- TAB 2: All Tasks ----------------
+with tabs[1]:
+    st.header("📋 All Tasks")
 
     # --- Add To-Do Form ---
     with st.form("add_todo_form", clear_on_submit=True):
         new_todo = st.text_input("New Task", placeholder="Enter your task here...")
-        priority = st.selectbox("Priority", ["High", "Medium", "Low"], index=1)
+        size = st.selectbox("Size", ["tiny", "small", "big", "project"], index=1)
         submitted = st.form_submit_button("➕ Add To-Do")
 
         if submitted and new_todo.strip():
@@ -143,27 +204,16 @@ with tabs[0]:
             cursor = conn.cursor()
             created_timestamp = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute(
-                "INSERT INTO todo (content, priority, timestamp) VALUES (?, ?, ?)",
-                (new_todo.strip(), priority, created_timestamp),
+                "INSERT INTO todo (content, size, timestamp) VALUES (?, ?, ?)",
+                (new_todo.strip(), size, created_timestamp),
             )
-            
             conn.commit()
             conn.close()
-
-            
-            st.success(f"✅ Added task/idea: {new_todo}")
+            st.success(f"✅ Added: {new_todo}")
             st.rerun()
 
-    # --- Display To-Dos ---
     todos_df = get_todos()
-    if not todos_df.empty:
-        for prio, title in zip(
-            ["High", "Medium", "Low"],
-            ["🔴 High Priority", "🟡 Medium Priority", "🟢 Low Priority"]
-        ):
-            display_todos(todos_df[todos_df["priority"] == prio], title)
-    else:
-        st.success("All tasks are complete! Great job.")
+    display_todos(todos_df, key_prefix="all_")
 
     # --- Completed Tasks ---
     st.header("🏁 Completed Tasks")
@@ -176,33 +226,33 @@ with tabs[0]:
         # Display each completed task
         for _, row in completed_df.iterrows():
             time_in_days = row["time_to_complete"].total_seconds() / (24*3600)
+            size = row.get("size") or "small"
             st.markdown(
                 f"✅ **{row['content']}**  \n"
                 f"<span style='color:gray; font-size:0.85em;'>"
-                f"Added {row['timestamp']} • Completed {row['completed_timestamp']}  \n"
-                f"⏱ Took {time_in_days:.1f} days • Priority: {row['priority']}</span>",
+                f"Added {row['timestamp']} · Completed {row['completed_timestamp']}  \n"
+                f"⏱ Took {time_in_days:.1f} days · {SIZE_LABEL.get(size, size)}</span>",
                 unsafe_allow_html=True,
             )
             st.markdown("---")
 
-        # Compute average per priority
+        # Average completion time by size
         avg_times = (
-            completed_df.groupby("priority")["time_to_complete"]
+            completed_df.groupby("size")["time_to_complete"]
             .mean()
             .apply(lambda x: x.total_seconds() / (24*3600))
         )
 
-        # Show averages nicely
-        st.subheader("📊 Average Completion Time by Priority")
-        for prio, days in avg_times.items():
-            color = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(prio, "⚪")
-            st.success(f"{color} {prio} Priority: {days:.1f} days")
+        st.subheader("📊 Average Completion Time by Size")
+        for size, days in avg_times.items():
+            label = SIZE_LABEL.get(size, size)
+            st.success(f"{label}: {days:.1f} days")
 
     else:
         st.info("No tasks completed yet.")
 
-# ---------------- TAB 2: Categorized Ideas ----------------
-with tabs[1]:
+# ---------------- TAB 3: Ideas ----------------
+with tabs[2]:
     st.header("💡 Ideas")
     
 
@@ -280,7 +330,7 @@ def semantic_search(query, top_k=5):
     similarities.sort(reverse=True, key=lambda x: x[0])
     return similarities[:top_k]
 
-with tabs[2]:
+with tabs[3]:
     st.header("🔍 Semantic Search")
     query = st.text_input("Search your notes...")
 
