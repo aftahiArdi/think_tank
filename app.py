@@ -326,5 +326,416 @@ def delete_todo():
     return jsonify({'message': 'Task deleted.'}), 200
 
 
+# --- New API Endpoints ---
+
+ALLOWED_MIME_TYPES = {
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+    'video/mp4', 'video/quicktime', 'video/webm'
+}
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+
+app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
+
+
+def sanitize_filename(name):
+    """Strip path separators and special chars, keep alphanumeric, hyphens, underscores, dots."""
+    name = os.path.basename(name)
+    name = re.sub(r'[^\w\-.]', '_', name)
+    return name
+
+
+@app.route('/ideas', methods=['GET'])
+def list_ideas():
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.category_id,
+                   c.name as category_name, c.color as category_color
+            FROM ideas i
+            LEFT JOIN categories c ON i.category_id = c.id
+            ORDER BY i.timestamp DESC
+        ''')
+        ideas_rows = cursor.fetchall()
+
+        # Fetch all media in one query, group by idea_id
+        cursor.execute('SELECT id, idea_id, filename, original_name, media_type, file_size, created_at FROM idea_media')
+        media_by_idea = {}
+        for m in cursor.fetchall():
+            media_by_idea.setdefault(m['idea_id'], []).append({
+                'id': m['id'],
+                'filename': m['filename'],
+                'media_type': m['media_type'],
+                'file_size': m['file_size'],
+                'url': f"/api/flask/uploads/{m['filename']}"
+            })
+
+        ideas = []
+        for row in ideas_rows:
+            idea = {
+                'id': row['id'],
+                'content': row['content'],
+                'timestamp': row['timestamp'],
+                'media_type': row['media_type'] or 'text',
+                'has_media': bool(row['has_media']),
+                'category': None,
+                'media': media_by_idea.get(row['id'], [])
+            }
+            if row['category_id']:
+                idea['category'] = {
+                    'id': row['category_id'],
+                    'name': row['category_name'],
+                    'color': row['category_color']
+                }
+
+            ideas.append(idea)
+
+        conn.close()
+        return jsonify({'ideas': ideas, 'total': len(ideas)}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas', methods=['POST'])
+def create_idea():
+    data = request.get_json()
+    content = data.get('content', '')
+    category_id = data.get('category_id')
+
+    if not content and not category_id:
+        return jsonify({'error': 'Content is required.'}), 400
+
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+        vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            'INSERT INTO ideas (content, timestamp, category_id) VALUES (?, ?, ?)',
+            (content, vancouver_time, category_id)
+        )
+        idea_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        # Auto-categorize in background if no category was provided
+        if not category_id and content:
+            threading.Thread(target=auto_categorize, args=(idea_id, content)).start()
+
+        return jsonify({'id': idea_id, 'message': 'Idea saved.'}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/<int:idea_id>', methods=['PATCH'])
+def update_idea(idea_id):
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        updates = []
+        values = []
+        if 'content' in data:
+            updates.append('content = ?')
+            values.append(data['content'])
+        if 'category_id' in data:
+            updates.append('category_id = ?')
+            values.append(data['category_id'])
+
+        if not updates:
+            conn.close()
+            return jsonify({'error': 'No fields to update.'}), 400
+
+        values.append(idea_id)
+        cursor.execute(f"UPDATE ideas SET {', '.join(updates)} WHERE id = ?", values)
+
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'Idea not found.'}), 404
+
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Idea updated.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/<int:idea_id>', methods=['DELETE'])
+def delete_idea(idea_id):
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        # Check idea exists first
+        cursor.execute('SELECT id FROM ideas WHERE id = ?', (idea_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Idea not found.'}), 404
+
+        # Get media files to delete from disk
+        cursor.execute('SELECT filename FROM idea_media WHERE idea_id = ?', (idea_id,))
+        media_files = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute('DELETE FROM idea_media WHERE idea_id = ?', (idea_id,))
+        cursor.execute('DELETE FROM ideas WHERE id = ?', (idea_id,))
+        conn.commit()
+        conn.close()
+
+        # Delete files from disk
+        for filename in media_files:
+            filepath = os.path.join('uploads', filename)
+            if os.path.exists(filepath):
+                os.remove(filepath)
+
+        return jsonify({'message': 'Idea deleted.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/search', methods=['POST'])
+def semantic_search():
+    data = request.get_json()
+    query = data.get('query', '').strip()
+
+    if not query:
+        return jsonify({'error': 'Query is required.'}), 400
+
+    try:
+        # Generate query embedding
+        query_embedding = embed_model.encode([f"search_query: {query}"])[0]
+        query_vec = np.array(query_embedding).reshape(1, -1)
+
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT i.id, i.content, i.timestamp, i.embedding, i.category_id,
+                   c.name as category_name, c.color as category_color
+            FROM ideas i
+            LEFT JOIN categories c ON i.category_id = c.id
+            WHERE i.embedding IS NOT NULL
+        ''')
+
+        results = []
+        for row in cursor.fetchall():
+            idea_vec = np.array(json.loads(row['embedding'])).reshape(1, -1)
+            similarity = float(cosine_similarity(query_vec, idea_vec)[0][0])
+
+            if similarity > 0.3:
+                result = {
+                    'id': row['id'],
+                    'content': row['content'],
+                    'timestamp': row['timestamp'],
+                    'similarity': round(similarity, 3),
+                    'category': None
+                }
+                if row['category_id']:
+                    result['category'] = {
+                        'id': row['category_id'],
+                        'name': row['category_name'],
+                        'color': row['category_color']
+                    }
+                results.append(result)
+
+        conn.close()
+
+        # Sort by similarity descending, top 20
+        results.sort(key=lambda r: r['similarity'], reverse=True)
+        return jsonify({'results': results[:20]}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided.'}), 400
+
+    file = request.files['file']
+    idea_id = request.form.get('idea_id')
+
+    if not idea_id:
+        return jsonify({'error': 'idea_id is required.'}), 400
+
+    if not file.filename:
+        return jsonify({'error': 'Empty filename.'}), 400
+
+    # Check MIME type
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        return jsonify({'error': f'File type {file.content_type} not allowed.'}), 400
+
+    try:
+        sanitized = sanitize_filename(file.filename)
+        stored_filename = f"{idea_id}_{sanitized}"
+        filepath = os.path.join('uploads', stored_filename)
+
+        os.makedirs('uploads', exist_ok=True)
+        file.save(filepath)
+        file_size = os.path.getsize(filepath)
+
+        # Determine media type
+        media_type = 'image' if file.content_type.startswith('image/') else 'video'
+
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+        vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            'INSERT INTO idea_media (idea_id, filename, original_name, media_type, file_size, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+            (idea_id, stored_filename, file.filename, media_type, file_size, vancouver_time)
+        )
+        media_id = cursor.lastrowid
+
+        # Update idea's media_type and has_media
+        cursor.execute('SELECT media_type FROM ideas WHERE id = ?', (idea_id,))
+        row = cursor.fetchone()
+        if row:
+            current_type = row[0] or 'text'
+            if current_type == 'text':
+                new_type = media_type
+            elif current_type != media_type:
+                new_type = 'mixed'
+            else:
+                new_type = current_type
+            cursor.execute(
+                'UPDATE ideas SET media_type = ?, has_media = 1 WHERE id = ?',
+                (new_type, idea_id)
+            )
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'id': media_id,
+            'filename': stored_filename,
+            'url': f'/api/flask/uploads/{stored_filename}'
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/uploads/<path:filename>')
+def serve_upload(filename):
+    return send_from_directory('uploads', filename)
+
+
+@app.route('/categories', methods=['GET'])
+def list_categories():
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, name, color, sort_order FROM categories ORDER BY sort_order')
+        categories = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'categories': categories}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/categories', methods=['POST'])
+def create_category():
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    color = data.get('color', '#71717a')
+
+    if not name:
+        return jsonify({'error': 'Name is required.'}), 400
+
+    try:
+        # Generate embedding for the category
+        embedding = generate_embedding(name)
+
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT MAX(sort_order) FROM categories')
+        max_order = cursor.fetchone()[0] or 0
+
+        cursor.execute(
+            'INSERT INTO categories (name, color, embedding, sort_order) VALUES (?, ?, ?, ?)',
+            (name, color, json.dumps(embedding), max_order + 1)
+        )
+        cat_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        return jsonify({'id': cat_id, 'message': 'Category created.'}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({'error': 'Category name already exists.'}), 409
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/categories/<int:cat_id>', methods=['PATCH'])
+def update_category(cat_id):
+    data = request.get_json()
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        updates = []
+        values = []
+        if 'name' in data:
+            updates.append('name = ?')
+            values.append(data['name'])
+            # Regenerate embedding if name changes
+            embedding = generate_embedding(data['name'])
+            updates.append('embedding = ?')
+            values.append(json.dumps(embedding))
+        if 'color' in data:
+            updates.append('color = ?')
+            values.append(data['color'])
+
+        if not updates:
+            conn.close()
+            return jsonify({'error': 'No fields to update.'}), 400
+
+        values.append(cat_id)
+        cursor.execute(f"UPDATE categories SET {', '.join(updates)} WHERE id = ?", values)
+
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'Category not found.'}), 404
+
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Category updated.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/categories/<int:cat_id>', methods=['DELETE'])
+def delete_category(cat_id):
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        # Reassign ideas to "Misc" category
+        cursor.execute("SELECT id FROM categories WHERE name = 'Misc'")
+        misc_row = cursor.fetchone()
+        misc_id = misc_row[0] if misc_row else None
+
+        if misc_id:
+            cursor.execute(
+                'UPDATE ideas SET category_id = ? WHERE category_id = ?',
+                (misc_id, cat_id)
+            )
+
+        cursor.execute('DELETE FROM categories WHERE id = ?', (cat_id,))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'Category not found.'}), 404
+
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Category deleted.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=6000)
