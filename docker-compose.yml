@@ -1,13 +1,16 @@
 services:
   flask:
-    image: think_tank
-    command: gunicorn -b 0.0.0.0:6000 app:app
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: think_tank_api
+    command: gunicorn -b 0.0.0.0:6000 -w 1 --threads 4 --preload app:app
     ports:
       - "6000:6000"
     volumes:
       - /home/ardi/think_tank/notes.db:/app/notes.db
+      - /home/ardi/think_tank/uploads:/app/uploads
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - MAIL_SERVER=${MAIL_SERVER}
       - MAIL_PORT=${MAIL_PORT}
       - MAIL_USE_TLS=${MAIL_USE_TLS}
@@ -16,21 +19,17 @@ services:
       - MAIL_DEFAULT_SENDER=${MAIL_DEFAULT_SENDER}
     restart: always
 
-  streamlit:
-    image: think_tank
-    command: streamlit run stl.py --server.port 8502 --server.address 0.0.0.0
+  nextjs:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: think_tank_frontend
     ports:
-      - "8502:8502"
-    volumes:
-      - /home/ardi/think_tank/notes.db:/app/notes.db
+      - "3000:3000"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MAIL_SERVER=${MAIL_SERVER}
-      - MAIL_PORT=${MAIL_PORT}
-      - MAIL_USE_TLS=${MAIL_USE_TLS}
-      - MAIL_USERNAME=${MAIL_USERNAME}
-      - MAIL_PASSWORD=${MAIL_PASSWORD}
-      - MAIL_DEFAULT_SENDER=${MAIL_DEFAULT_SENDER}
-    restart: always
+      - API_URL=http://flask:6000
+      - THINK_TANK_PASSWORD=${THINK_TANK_PASSWORD}
+      - COOKIE_SECRET=${COOKIE_SECRET}
     depends_on:
       - flask
+    restart: always

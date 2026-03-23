@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SERVICES = ["think_tank-flask-1", "think_tank-streamlit-1"]
+SERVICES = ["think_tank_api", "think_tank_frontend"]
 
 SENDER_EMAIL = os.environ.get("MAIL_USERNAME")
 SENDER_PASSWORD = os.environ.get("MAIL_PASSWORD")
