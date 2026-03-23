@@ -1,10 +1,97 @@
 import sqlite3
-from flask import Flask, request, jsonify
+import json
+import threading
+import os
+import re
+from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # --- Timezone Setup ---
 VANCOUVER_TZ = ZoneInfo("America/Vancouver")
+
+# --- Embedding Model ---
+print("Loading nomic-embed-text-v1.5 model...")
+embed_model = SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)
+print("Model loaded.")
+
+CATEGORY_DESCRIPTIONS = {
+    "Tech / Experiments": "technology, programming, software, hardware, coding, experiments, tools, APIs, apps",
+    "Music": "music, instruments, synths, plugins, production, songs, albums, concerts, audio",
+    "Books": "books, reading, literature, authors, novels, articles, writing",
+    "Personal / Philosophical": "personal life, philosophy, thoughts, reflections, relationships, meaning",
+    "Productivity": "productivity, workflow, habits, systems, efficiency, organization, planning",
+    "Gym / Health": "gym, exercise, fitness, health, nutrition, diet, workout, running",
+    "Misc": "miscellaneous, random, other, general",
+}
+
+
+def generate_embedding(text):
+    """Generate embedding for a text string using nomic model."""
+    embedding = embed_model.encode([f"search_document: {text}"])[0]
+    return embedding.tolist()
+
+
+def auto_categorize(idea_id, content):
+    """Auto-categorize an idea in a background thread."""
+    try:
+        embedding = generate_embedding(content)
+        embedding_json = json.dumps(embedding)
+
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, name, embedding FROM categories WHERE embedding IS NOT NULL")
+        categories = cursor.fetchall()
+
+        if not categories:
+            # Still save the embedding even without categories
+            cursor.execute("UPDATE ideas SET embedding = ? WHERE id = ?", (embedding_json, idea_id))
+            conn.commit()
+            conn.close()
+            return
+
+        idea_vec = np.array(embedding).reshape(1, -1)
+        best_cat_id = None
+        best_score = -1
+
+        for cat_id, cat_name, cat_embedding_json in categories:
+            cat_vec = np.array(json.loads(cat_embedding_json)).reshape(1, -1)
+            score = cosine_similarity(idea_vec, cat_vec)[0][0]
+            if score > best_score:
+                best_score = score
+                best_cat_id = cat_id
+
+        cursor.execute(
+            "UPDATE ideas SET embedding = ?, category_id = ? WHERE id = ?",
+            (embedding_json, best_cat_id, idea_id)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Auto-categorize error for idea {idea_id}: {e}")
+
+
+def seed_category_embeddings():
+    """Generate embeddings for categories that don't have them yet."""
+    conn = sqlite3.connect('notes.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM categories WHERE embedding IS NULL")
+    rows = cursor.fetchall()
+
+    for cat_id, cat_name in rows:
+        desc = CATEGORY_DESCRIPTIONS.get(cat_name, cat_name)
+        embedding = generate_embedding(desc)
+        cursor.execute(
+            "UPDATE categories SET embedding = ? WHERE id = ?",
+            (json.dumps(embedding), cat_id)
+        )
+
+    conn.commit()
+    conn.close()
 
 # --- Database Setup ---
 def init_db():
@@ -109,7 +196,9 @@ def init_db():
     conn.close()
 
 # --- Flask App ---
+init_db()
 app = Flask(__name__)
+seed_category_embeddings()
 
 @app.route('/add_note', methods=['POST'])
 def add_note():
@@ -123,10 +212,14 @@ def add_note():
     cursor = conn.cursor()
     vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute('INSERT INTO ideas (content, timestamp) VALUES (?, ?)', (content, vancouver_time))
+    idea_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
-    return jsonify({'message': 'Note added successfully.'}), 201
+    # Background: generate embedding + auto-categorize
+    threading.Thread(target=auto_categorize, args=(idea_id, content)).start()
+
+    return jsonify({'message': 'Note added successfully.', 'id': idea_id}), 201
 
 
 @app.route('/add_todo', methods=['POST'])
@@ -234,5 +327,4 @@ def delete_todo():
 
 
 if __name__ == '__main__':
-    init_db()
     app.run(host='0.0.0.0', port=6000)
