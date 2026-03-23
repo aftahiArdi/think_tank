@@ -27,7 +27,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen pb-20" style={{ backgroundColor: "var(--background)" }}>
-      <Header onSettingsClick={() => setSettingsOpen(true)} />
+      <Header onSettingsClick={() => setSettingsOpen(true)} ideaCount={ideas.length} />
 
       <main className="px-4 pt-2">
         {activeTab === "ideas" && (

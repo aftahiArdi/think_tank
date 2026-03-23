@@ -3,6 +3,7 @@
 import { memo } from "react";
 import type { Idea } from "@/lib/types";
 import { CategoryBadge } from "@/components/categories/category-badge";
+import { SpotlightCard } from "@/components/ui/spotlight";
 import { formatTime } from "@/lib/utils/dates";
 
 interface IdeaCardProps {
@@ -12,13 +13,16 @@ interface IdeaCardProps {
 
 export const IdeaCard = memo(function IdeaCard({ idea, onClick }: IdeaCardProps) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full text-left p-3.5 rounded-xl transition-colors"
+    <SpotlightCard
+      className="rounded-xl"
       style={{
         backgroundColor: "var(--card)",
         border: "1px solid var(--border)",
       }}
+    >
+    <button
+      onClick={onClick}
+      className="w-full text-left p-3.5"
     >
       {idea.content && (
         <p className="text-sm leading-relaxed mb-2" style={{ color: "var(--foreground)" }}>
@@ -60,5 +64,6 @@ export const IdeaCard = memo(function IdeaCard({ idea, onClick }: IdeaCardProps)
         </span>
       </div>
     </button>
+    </SpotlightCard>
   );
 });
