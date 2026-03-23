@@ -172,10 +172,12 @@ def load_categorized_ideas():
 st.set_page_config(page_title="Think Tank", layout="centered")
 st.title("Think Tank")
 
-tabs = st.tabs(["Focus", "All Tasks", "Ideas", "Search"])
+tabs = st.tabs(["Ideas", "Search"])
+# Hidden tabs kept for API/email functionality — not displayed in UI
+_hidden_tabs = [None, None]
 
-# ---------------- TAB 1: Focus ----------------
-with tabs[0]:
+# ---------------- HIDDEN: Focus (functionality preserved) ----------------
+if False:
     st.header("🎯 Focus — Your Top 5")
 
     todos_df = get_todos()
@@ -189,8 +191,8 @@ with tabs[0]:
             st.caption(f"{remaining} more tasks in the backlog — just focus on these.")
         display_todos(focus_df, key_prefix="focus_")
 
-# ---------------- TAB 2: All Tasks ----------------
-with tabs[1]:
+# ---------------- HIDDEN: All Tasks (functionality preserved) ----------------
+if False:
     st.header("📋 All Tasks")
 
     # --- Add To-Do Form ---
@@ -251,8 +253,8 @@ with tabs[1]:
     else:
         st.info("No tasks completed yet.")
 
-# ---------------- TAB 3: Ideas ----------------
-with tabs[2]:
+# ---------------- TAB 1: Ideas ----------------
+with tabs[0]:
     st.header("💡 Ideas")
     
 
@@ -330,7 +332,7 @@ def semantic_search(query, top_k=5):
     similarities.sort(reverse=True, key=lambda x: x[0])
     return similarities[:top_k]
 
-with tabs[3]:
+with tabs[1]:
     st.header("🔍 Semantic Search")
     query = st.text_input("Search your notes...")
 
