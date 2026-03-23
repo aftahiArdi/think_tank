@@ -951,15 +951,13 @@ npx create-next-app@latest frontend --typescript --tailwind --eslint --app --src
 
 ```bash
 cd frontend
-npm install swr fuse.js framer-motion react-sketch-canvas browser-image-compression react-window lucide-react
+npm install swr fuse.js framer-motion react-sketch-canvas browser-image-compression react-window lucide-react sonner
 npm install -D @types/react-window
 npx shadcn@latest init -d
-npx shadcn@latest add drawer button input badge tabs toast dialog skeleton toaster
+npx shadcn@latest add drawer button input badge tabs dialog skeleton sonner
 ```
 
 Note: React Bits components are copy-paste from reactbits.dev, not an npm package. They will be added as local components in later tasks.
-
-Note: After running `shadcn add toast`, check where it places the `useToast` hook — it may be at `@/hooks/use-toast` or `@/components/ui/use-toast`. Adjust imports in capture-sheet and category-manager accordingly.
 
 - [ ] **Step 3: Configure next.config.ts with API proxy rewrites**
 
@@ -1082,7 +1080,7 @@ Replace `frontend/app/layout.tsx`:
 import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme/theme-provider";
-import { Toaster } from "@/components/ui/toaster";
+import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
   title: "Think Tank",
@@ -2273,7 +2271,7 @@ import { useIdeas } from "@/lib/hooks/use-ideas";
 import { useUpload } from "@/lib/hooks/use-upload";
 import { createIdea } from "@/lib/api";
 import { Camera, Pencil, Video } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
 
 interface CaptureSheetProps {
   open: boolean;
@@ -2299,7 +2297,7 @@ export function CaptureSheet({
   const { categories } = useCategories();
   const { mutate } = useIdeas();
   const { upload, uploading } = useUpload();
-  const { toast } = useToast();
+  // toast imported from "sonner" at top of file
 
   const handleSave = async () => {
     if (!content.trim() && files.length === 0 && !sketchBlob) return;
@@ -2319,7 +2317,7 @@ export function CaptureSheet({
         try {
           await upload(ideaId, allFiles);
         } catch {
-          toast({ title: "Upload failed", description: "Idea saved but media upload failed." });
+          toast.error("Idea saved but media upload failed.");
         }
       }
 
@@ -2331,7 +2329,7 @@ export function CaptureSheet({
       onOpenChange(false);
       mutate();
     } catch {
-      toast({ title: "Error", description: "Failed to save idea." });
+      toast.error("Failed to save idea.");
     } finally {
       setSaving(false);
     }
@@ -2889,12 +2887,12 @@ import { createCategory, deleteCategory } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Trash2, Plus } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
 
 export function CategoryManager() {
   const { categories, mutate } = useCategories();
   const { ideas } = useIdeas();
-  const { toast } = useToast();
+  // toast imported from "sonner" at top of file
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState("#71717a");
 
@@ -2908,7 +2906,7 @@ export function CategoryManager() {
       setNewName("");
       mutate();
     } catch (e: any) {
-      toast({ title: "Error", description: e.message });
+      toast.error(e.message);
     }
   };
 
@@ -2918,7 +2916,7 @@ export function CategoryManager() {
       await deleteCategory(id);
       mutate();
     } catch (e: any) {
-      toast({ title: "Error", description: e.message });
+      toast.error(e.message);
     }
   };
 
