@@ -11,6 +11,7 @@ def init_db():
     conn = sqlite3.connect('notes.db')
     cursor = conn.cursor()
 
+    # Existing tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ideas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,19 +39,71 @@ def init_db():
         )
     ''')
 
-    # Migrate existing todo table: add size if missing
+    # New tables
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            color TEXT,
+            embedding TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS idea_media (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            original_name TEXT,
+            media_type TEXT NOT NULL,
+            file_size INTEGER,
+            created_at DATETIME NOT NULL
+        )
+    ''')
+
+    # Migrate ideas table: add new columns if missing
+    cursor.execute("PRAGMA table_info(ideas)")
+    ideas_cols = [col[1] for col in cursor.fetchall()]
+
+    if "embedding" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN embedding TEXT")
+    if "media_type" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN media_type TEXT DEFAULT 'text'")
+    if "has_media" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN has_media INTEGER DEFAULT 0")
+    if "category_id" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN category_id INTEGER REFERENCES categories(id)")
+
+    # Migrate todo tables (existing pattern)
     cursor.execute("PRAGMA table_info(todo)")
     todo_cols = [col[1] for col in cursor.fetchall()]
     if "size" not in todo_cols:
         cursor.execute("ALTER TABLE todo ADD COLUMN size TEXT DEFAULT 'small'")
 
-    # Migrate existing completed_todo table: add size if missing
     cursor.execute("PRAGMA table_info(completed_todo)")
     completed_cols = [col[1] for col in cursor.fetchall()]
     if "size" not in completed_cols:
         cursor.execute("ALTER TABLE completed_todo ADD COLUMN size TEXT DEFAULT 'small'")
     if "completed_timestamp" not in completed_cols:
         cursor.execute("ALTER TABLE completed_todo ADD COLUMN completed_timestamp DATETIME")
+
+    # Seed default categories if empty
+    cursor.execute("SELECT COUNT(*) FROM categories")
+    if cursor.fetchone()[0] == 0:
+        default_categories = [
+            ("Tech / Experiments", "#60a5fa", 0),
+            ("Music", "#a78bfa", 1),
+            ("Books", "#34d399", 2),
+            ("Personal / Philosophical", "#f472b6", 3),
+            ("Productivity", "#facc15", 4),
+            ("Gym / Health", "#fb923c", 5),
+            ("Misc", "#71717a", 6),
+        ]
+        cursor.executemany(
+            "INSERT INTO categories (name, color, sort_order) VALUES (?, ?, ?)",
+            default_categories
+        )
 
     conn.commit()
     conn.close()
