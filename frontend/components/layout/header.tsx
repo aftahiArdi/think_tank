@@ -1,19 +1,33 @@
 "use client";
 
 import { Settings } from "lucide-react";
+import { CountUp } from "@/components/ui/count-up";
 
-export function Header({ onSettingsClick }: { onSettingsClick: () => void }) {
+export function Header({
+  onSettingsClick,
+  ideaCount = 0,
+}: {
+  onSettingsClick: () => void;
+  ideaCount?: number;
+}) {
   return (
     <header className="flex items-center justify-between px-4 py-3 sticky top-0 z-40"
             style={{ backgroundColor: "var(--background)" }}>
-      <h1 className="text-xl font-bold tracking-tight"
-          style={{
-            background: "linear-gradient(135deg, var(--foreground), var(--muted-foreground))",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-          }}>
-        think tank
-      </h1>
+      <div>
+        <h1 className="text-xl font-bold tracking-tight"
+            style={{
+              background: "linear-gradient(135deg, var(--foreground), var(--muted-foreground))",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+            }}>
+          think tank
+        </h1>
+        {ideaCount > 0 && (
+          <p className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+            <CountUp target={ideaCount} /> ideas
+          </p>
+        )}
+      </div>
       <button
         onClick={onSettingsClick}
         className="w-8 h-8 rounded-lg flex items-center justify-center"
