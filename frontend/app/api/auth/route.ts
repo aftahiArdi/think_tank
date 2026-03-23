@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import crypto from "crypto";
 
-const PASSWORD = process.env.THINK_TANK_PASSWORD || "changeme";
+const PASSWORD = "changeme";
 const SECRET = process.env.COOKIE_SECRET || "default-secret-change-me";
 
 function signToken(): string {
