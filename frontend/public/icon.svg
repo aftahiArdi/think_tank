@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0a0a0a"/>
+  <!-- Lightbulb body -->
+  <path d="M256 120 C200 120 160 160 160 216 C160 252 180 280 210 298 L210 330 C210 338 217 344 226 344 L286 344 C295 344 302 338 302 330 L302 298 C332 280 352 252 352 216 C352 160 312 120 256 120 Z" fill="#fafafa"/>
+  <!-- Filament lines -->
+  <rect x="226" y="344" width="60" height="10" rx="5" fill="#888"/>
+  <rect x="230" y="360" width="52" height="10" rx="5" fill="#888"/>
+  <rect x="236" y="376" width="40" height="10" rx="5" fill="#555"/>
+  <!-- Subtle glow -->
+  <circle cx="256" cy="216" r="40" fill="none" stroke="#fafafa" stroke-width="2" opacity="0.15"/>
+</svg>

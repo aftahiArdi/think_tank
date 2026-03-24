@@ -8,15 +8,10 @@ services:
     ports:
       - "6000:6000"
     volumes:
-      - /home/ardi/think_tank/notes.db:/app/notes.db
-      - /home/ardi/think_tank/uploads:/app/uploads
+      - /home/ardi/Projects/think_tank/notes.db:/app/notes.db
+      - /home/ardi/Projects/think_tank/uploads:/app/uploads
     environment:
-      - MAIL_SERVER=${MAIL_SERVER}
-      - MAIL_PORT=${MAIL_PORT}
-      - MAIL_USE_TLS=${MAIL_USE_TLS}
-      - MAIL_USERNAME=${MAIL_USERNAME}
-      - MAIL_PASSWORD=${MAIL_PASSWORD}
-      - MAIL_DEFAULT_SENDER=${MAIL_DEFAULT_SENDER}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: always
 
   nextjs:
@@ -25,8 +20,9 @@ services:
       dockerfile: Dockerfile
     container_name: think_tank_frontend
     ports:
-      - "3000:3000"
+      - "3004:3004"
     environment:
+      - PORT=3004
       - API_URL=http://flask:6000
       - THINK_TANK_PASSWORD=${THINK_TANK_PASSWORD}
       - COOKIE_SECRET=${COOKIE_SECRET}

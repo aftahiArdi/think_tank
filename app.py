@@ -1,97 +1,12 @@
 import sqlite3
 import json
-import threading
 import os
 import re
 from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-
 # --- Timezone Setup ---
 VANCOUVER_TZ = ZoneInfo("America/Vancouver")
-
-# --- Embedding Model ---
-print("Loading nomic-embed-text-v1.5 model...")
-embed_model = SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)
-print("Model loaded.")
-
-CATEGORY_DESCRIPTIONS = {
-    "Tech / Experiments": "technology, programming, software, hardware, coding, experiments, tools, APIs, apps",
-    "Music": "music, instruments, synths, plugins, production, songs, albums, concerts, audio",
-    "Books": "books, reading, literature, authors, novels, articles, writing",
-    "Personal / Philosophical": "personal life, philosophy, thoughts, reflections, relationships, meaning",
-    "Productivity": "productivity, workflow, habits, systems, efficiency, organization, planning",
-    "Gym / Health": "gym, exercise, fitness, health, nutrition, diet, workout, running",
-    "Misc": "miscellaneous, random, other, general",
-}
-
-
-def generate_embedding(text):
-    """Generate embedding for a text string using nomic model."""
-    embedding = embed_model.encode([f"search_document: {text}"])[0]
-    return embedding.tolist()
-
-
-def auto_categorize(idea_id, content):
-    """Auto-categorize an idea in a background thread."""
-    try:
-        embedding = generate_embedding(content)
-        embedding_json = json.dumps(embedding)
-
-        conn = sqlite3.connect('notes.db')
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT id, name, embedding FROM categories WHERE embedding IS NOT NULL")
-        categories = cursor.fetchall()
-
-        if not categories:
-            # Still save the embedding even without categories
-            cursor.execute("UPDATE ideas SET embedding = ? WHERE id = ?", (embedding_json, idea_id))
-            conn.commit()
-            conn.close()
-            return
-
-        idea_vec = np.array(embedding).reshape(1, -1)
-        best_cat_id = None
-        best_score = -1
-
-        for cat_id, cat_name, cat_embedding_json in categories:
-            cat_vec = np.array(json.loads(cat_embedding_json)).reshape(1, -1)
-            score = cosine_similarity(idea_vec, cat_vec)[0][0]
-            if score > best_score:
-                best_score = score
-                best_cat_id = cat_id
-
-        cursor.execute(
-            "UPDATE ideas SET embedding = ?, category_id = ? WHERE id = ?",
-            (embedding_json, best_cat_id, idea_id)
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Auto-categorize error for idea {idea_id}: {e}")
-
-
-def seed_category_embeddings():
-    """Generate embeddings for categories that don't have them yet."""
-    conn = sqlite3.connect('notes.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name FROM categories WHERE embedding IS NULL")
-    rows = cursor.fetchall()
-
-    for cat_id, cat_name in rows:
-        desc = CATEGORY_DESCRIPTIONS.get(cat_name, cat_name)
-        embedding = generate_embedding(desc)
-        cursor.execute(
-            "UPDATE categories SET embedding = ? WHERE id = ?",
-            (json.dumps(embedding), cat_id)
-        )
-
-    conn.commit()
-    conn.close()
 
 # --- Database Setup ---
 def init_db():
@@ -198,7 +113,6 @@ def init_db():
 # --- Flask App ---
 init_db()
 app = Flask(__name__)
-seed_category_embeddings()
 
 @app.route('/add_note', methods=['POST'])
 def add_note():
@@ -328,10 +242,7 @@ def delete_todo():
 
 # --- New API Endpoints ---
 
-ALLOWED_MIME_TYPES = {
-    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-    'video/mp4', 'video/quicktime', 'video/webm'
-}
+ALLOWED_MIME_PREFIXES = ('image/', 'video/')
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
@@ -404,8 +315,7 @@ def create_idea():
     content = data.get('content', '')
     category_id = data.get('category_id')
 
-    if not content and not category_id:
-        return jsonify({'error': 'Content is required.'}), 400
+    # Allow media-only ideas (content can be empty if media will be attached)
 
     try:
         conn = sqlite3.connect('notes.db')
@@ -419,11 +329,55 @@ def create_idea():
         conn.commit()
         conn.close()
 
-        # Auto-categorize in background if no category was provided
-        if not category_id and content:
-            threading.Thread(target=auto_categorize, args=(idea_id, content)).start()
-
         return jsonify({'id': idea_id, 'message': 'Idea saved.'}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/<int:idea_id>', methods=['GET'])
+def get_idea(idea_id):
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.category_id,
+                   c.name as category_name, c.color as category_color
+            FROM ideas i
+            LEFT JOIN categories c ON i.category_id = c.id
+            WHERE i.id = ?
+        ''', (idea_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Idea not found.'}), 404
+
+        cursor.execute(
+            'SELECT id, filename, original_name, media_type, file_size, created_at FROM idea_media WHERE idea_id = ?',
+            (idea_id,)
+        )
+        media = [{
+            'id': m['id'],
+            'filename': m['filename'],
+            'media_type': m['media_type'],
+            'file_size': m['file_size'],
+            'url': f"/api/flask/uploads/{m['filename']}"
+        } for m in cursor.fetchall()]
+
+        conn.close()
+
+        idea = {
+            'id': row['id'],
+            'content': row['content'],
+            'timestamp': row['timestamp'],
+            'media_type': row['media_type'] or 'text',
+            'has_media': bool(row['has_media']),
+            'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
+            'media': media,
+        }
+        return jsonify(idea), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -496,57 +450,8 @@ def delete_idea(idea_id):
 
 @app.route('/search', methods=['POST'])
 def semantic_search():
-    data = request.get_json()
-    query = data.get('query', '').strip()
-
-    if not query:
-        return jsonify({'error': 'Query is required.'}), 400
-
-    try:
-        # Generate query embedding
-        query_embedding = embed_model.encode([f"search_query: {query}"])[0]
-        query_vec = np.array(query_embedding).reshape(1, -1)
-
-        conn = sqlite3.connect('notes.db')
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT i.id, i.content, i.timestamp, i.embedding, i.category_id,
-                   c.name as category_name, c.color as category_color
-            FROM ideas i
-            LEFT JOIN categories c ON i.category_id = c.id
-            WHERE i.embedding IS NOT NULL
-        ''')
-
-        results = []
-        for row in cursor.fetchall():
-            idea_vec = np.array(json.loads(row['embedding'])).reshape(1, -1)
-            similarity = float(cosine_similarity(query_vec, idea_vec)[0][0])
-
-            if similarity > 0.3:
-                result = {
-                    'id': row['id'],
-                    'content': row['content'],
-                    'timestamp': row['timestamp'],
-                    'similarity': round(similarity, 3),
-                    'category': None
-                }
-                if row['category_id']:
-                    result['category'] = {
-                        'id': row['category_id'],
-                        'name': row['category_name'],
-                        'color': row['category_color']
-                    }
-                results.append(result)
-
-        conn.close()
-
-        # Sort by similarity descending, top 20
-        results.sort(key=lambda r: r['similarity'], reverse=True)
-        return jsonify({'results': results[:20]}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # Semantic search disabled (ML model removed)
+    return jsonify({'results': []}), 200
 
 
 @app.route('/upload', methods=['POST'])
@@ -563,9 +468,15 @@ def upload_file():
     if not file.filename:
         return jsonify({'error': 'Empty filename.'}), 400
 
-    # Check MIME type
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        return jsonify({'error': f'File type {file.content_type} not allowed.'}), 400
+    # Determine content type — fall back to guessing from filename
+    import mimetypes
+    content_type = file.content_type or ''
+    if not content_type or content_type == 'application/octet-stream':
+        guessed, _ = mimetypes.guess_type(file.filename)
+        content_type = guessed or ''
+
+    if not any(content_type.startswith(p) for p in ALLOWED_MIME_PREFIXES):
+        return jsonify({'error': f'File type not allowed: {content_type or "unknown"}'}), 400
 
     try:
         sanitized = sanitize_filename(file.filename)
@@ -576,8 +487,13 @@ def upload_file():
         file.save(filepath)
         file_size = os.path.getsize(filepath)
 
-        # Determine media type
-        media_type = 'image' if file.content_type.startswith('image/') else 'video'
+        # Determine media type — sketches are uploaded as sketch.png
+        if file.filename == 'sketch.png':
+            media_type = 'sketch'
+        elif content_type.startswith('image/'):
+            media_type = 'image'
+        else:
+            media_type = 'video'
 
         conn = sqlite3.connect('notes.db')
         cursor = conn.cursor()
@@ -646,17 +562,14 @@ def create_category():
         return jsonify({'error': 'Name is required.'}), 400
 
     try:
-        # Generate embedding for the category
-        embedding = generate_embedding(name)
-
         conn = sqlite3.connect('notes.db')
         cursor = conn.cursor()
         cursor.execute('SELECT MAX(sort_order) FROM categories')
         max_order = cursor.fetchone()[0] or 0
 
         cursor.execute(
-            'INSERT INTO categories (name, color, embedding, sort_order) VALUES (?, ?, ?, ?)',
-            (name, color, json.dumps(embedding), max_order + 1)
+            'INSERT INTO categories (name, color, sort_order) VALUES (?, ?, ?)',
+            (name, color, max_order + 1)
         )
         cat_id = cursor.lastrowid
         conn.commit()
@@ -681,10 +594,6 @@ def update_category(cat_id):
         if 'name' in data:
             updates.append('name = ?')
             values.append(data['name'])
-            # Regenerate embedding if name changes
-            embedding = generate_embedding(data['name'])
-            updates.append('embedding = ?')
-            values.append(json.dumps(embedding))
         if 'color' in data:
             updates.append('color = ?')
             values.append(data['color'])

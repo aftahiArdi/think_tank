@@ -26,10 +26,15 @@ async function verifyToken(token: string): Promise<boolean> {
 
 export async function proxy(request: NextRequest) {
   // Skip auth for login page and auth API
+  const { pathname } = request.nextUrl;
   if (
-    request.nextUrl.pathname.startsWith("/login") ||
-    request.nextUrl.pathname.startsWith("/api/auth") ||
-    request.nextUrl.pathname.startsWith("/api/flask")
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/api/flask") ||
+    pathname === "/manifest.json" ||
+    pathname === "/icon.svg" ||
+    pathname.startsWith("/icon-") ||
+    pathname === "/apple-touch-icon.png"
   ) {
     return NextResponse.next();
   }

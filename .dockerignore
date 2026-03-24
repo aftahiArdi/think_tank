@@ -1,6 +1,11 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.log
 .env
 notes.db
+uploads/
+frontend/
+*.db
+.git/

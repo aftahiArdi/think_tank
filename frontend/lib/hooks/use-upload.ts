@@ -18,9 +18,12 @@ export function useUpload() {
         files.map(async (file) => {
           let processedFile = file;
 
-          // Compress images client-side before upload
-          if (file.type.startsWith("image/")) {
-            processedFile = await imageCompression(file, COMPRESSION_OPTIONS);
+          // Compress images client-side before upload (skip HEIC/HEIF — canvas can't decode them)
+          const compressible = file.type.startsWith("image/") &&
+            !["image/heic", "image/heif"].includes(file.type.toLowerCase());
+          if (compressible) {
+            const compressed = await imageCompression(file, COMPRESSION_OPTIONS);
+            processedFile = new File([compressed], file.name, { type: compressed.type || file.type });
           }
 
           return uploadFile(ideaId, processedFile);

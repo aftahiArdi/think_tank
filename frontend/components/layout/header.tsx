@@ -11,8 +11,14 @@ export function Header({
   ideaCount?: number;
 }) {
   return (
-    <header className="flex items-center justify-between px-4 py-3 sticky top-0 z-40"
-            style={{ backgroundColor: "var(--background)" }}>
+    <header
+      className="flex items-center justify-between px-4 sticky top-0 z-40"
+      style={{
+        backgroundColor: "var(--background)",
+        paddingTop: "calc(env(safe-area-inset-top) + 12px)",
+        paddingBottom: 12,
+      }}
+    >
       <div>
         <h1 className="text-xl font-bold tracking-tight"
             style={{

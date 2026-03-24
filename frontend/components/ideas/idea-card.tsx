@@ -1,9 +1,9 @@
 "use client";
 
 import { memo } from "react";
+import { useRouter } from "next/navigation";
 import type { Idea } from "@/lib/types";
-import { CategoryBadge } from "@/components/categories/category-badge";
-import { SpotlightCard } from "@/components/ui/spotlight";
+import { GlowCard } from "@/components/ui/glow-card";
 import { formatTime } from "@/lib/utils/dates";
 
 interface IdeaCardProps {
@@ -11,22 +11,45 @@ interface IdeaCardProps {
   onClick?: () => void;
 }
 
+const URL_REGEX = /https?:\/\/[^\s<>"]+[^\s<>".,;:!?)]/g;
+
+function linkify(text: string) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  URL_REGEX.lastIndex = 0;
+  while ((match = URL_REGEX.exec(text)) !== null) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    parts.push(
+      <a
+        key={match.index}
+        href={match[0]}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline"
+        style={{ color: "var(--primary, #6366f1)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {match[0]}
+      </a>
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
 export const IdeaCard = memo(function IdeaCard({ idea, onClick }: IdeaCardProps) {
+  const router = useRouter();
+  const handleClick = onClick ?? (() => router.push(`/ideas/${idea.id}`));
   return (
-    <SpotlightCard
-      className="rounded-xl"
-      style={{
-        backgroundColor: "var(--card)",
-        border: "1px solid var(--border)",
-      }}
-    >
-    <button
-      onClick={onClick}
-      className="w-full text-left p-3.5"
+    <GlowCard onClick={handleClick}>
+    <div
+      className="w-full text-left px-3.5 py-3"
     >
       {idea.content && (
         <p className="text-sm leading-relaxed mb-2" style={{ color: "var(--foreground)" }}>
-          {idea.content}
+          {linkify(idea.content)}
         </p>
       )}
 
@@ -53,17 +76,12 @@ export const IdeaCard = memo(function IdeaCard({ idea, onClick }: IdeaCardProps)
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        {idea.category ? (
-          <CategoryBadge name={idea.category.name} color={idea.category.color} />
-        ) : (
-          <span />
-        )}
+      <div className="flex items-center justify-end">
         <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
           {formatTime(idea.timestamp)}
         </span>
       </div>
-    </button>
-    </SpotlightCard>
+    </div>
+    </GlowCard>
   );
 });
