@@ -3,14 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "standalone",
   allowedDevOrigins: ["100.124.163.12"],
-  async rewrites() {
-    return [
-      {
-        source: "/api/flask/:path*",
-        destination: `${process.env.API_URL || "http://localhost:6000"}/:path*`,
-      },
-    ];
-  },
+  devIndicators: false,
 };
 
 export default nextConfig;

@@ -22,6 +22,11 @@ export async function createIdea(content: string, categoryId?: number) {
   return handleResponse<{ id: number; message: string }>(res);
 }
 
+export async function fetchIdea(id: number) {
+  const res = await fetch(`${API_BASE}/ideas/${id}`);
+  return handleResponse<import("./types").Idea>(res);
+}
+
 export async function updateIdea(id: number, data: { content?: string; category_id?: number }) {
   const res = await fetch(`${API_BASE}/ideas/${id}`, {
     method: "PATCH",
@@ -48,7 +53,7 @@ export async function searchIdeas(query: string) {
 export async function uploadFile(ideaId: number, file: File) {
   const formData = new FormData();
   formData.append("idea_id", ideaId.toString());
-  formData.append("file", file);
+  formData.append("file", file, file.name);
   const res = await fetch(`${API_BASE}/upload`, {
     method: "POST",
     body: formData,

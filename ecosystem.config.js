@@ -7,7 +7,7 @@ module.exports = {
       cwd: "/home/ardi/Projects/think_tank",
       interpreter: "none",
       env: {
-        THINK_TANK_PASSWORD: "change-me",
+        THINK_TANK_PASSWORD: "changeme",
       },
     },
     {
