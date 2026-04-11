@@ -1,13 +1,14 @@
 "use client";
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { Lightbulb, Search, FolderOpen, Plus } from "lucide-react";
+import { Lightbulb, Search, Bookmark, FolderOpen, Plus } from "lucide-react";
 
-export type TabName = "ideas" | "search" | "categories";
+export type TabName = "ideas" | "search" | "starred" | "categories";
 
 const tabs: { name: TabName; icon: typeof Lightbulb; label: string }[] = [
   { name: "ideas",      icon: Lightbulb,  label: "Ideas"    },
   { name: "search",     icon: Search,     label: "Search"   },
+  { name: "starred",    icon: Bookmark,   label: "Starred"  },
   { name: "categories", icon: FolderOpen, label: "Settings" },
 ];
 
@@ -76,7 +77,7 @@ export function BottomNav({ activeTab, onTabChange, onAdd }: BottomNavProps) {
                 key={tab.name}
                 ref={(el) => { btnRefs.current[i] = el; }}
                 onClick={() => onTabChange(tab.name)}
-                className="relative z-10 flex flex-col items-center gap-0.5 px-6 py-2 rounded-xl"
+                className="relative z-10 flex flex-col items-center gap-0.5 px-4 py-2 rounded-xl"
                 style={{
                   transition: "transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
                 }}
