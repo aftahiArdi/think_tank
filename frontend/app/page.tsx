@@ -4,50 +4,17 @@ import { useState } from "react";
 import { Header } from "@/components/layout/header";
 import { BottomNav, type TabName } from "@/components/layout/bottom-nav";
 import { IdeaFeed } from "@/components/ideas/idea-feed";
+import { IdeaCard } from "@/components/ideas/idea-card";
 import { CaptureSheet } from "@/components/ideas/capture-sheet";
 import { SketchPad } from "@/components/sketch/sketch-pad";
 import { SearchBar } from "@/components/search/search-bar";
 import { SearchResults } from "@/components/search/search-results";
-import { CategoryManager } from "@/components/categories/category-manager";
 import { ThemeSelector } from "@/components/theme/theme-selector";
+import { StatsView } from "@/components/stats/stats-view";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { BiometricToggle } from "@/components/auth/biometric-toggle";
 import { useIdeas } from "@/lib/hooks/use-ideas";
 import { useSearch } from "@/lib/hooks/use-search";
-import type { Idea } from "@/lib/types";
-
-function SettingsStats({ ideas }: { ideas: Idea[] }) {
-  const todayKey = new Date().toLocaleDateString("en-CA");
-  const todayCount = ideas.filter((i) => i.timestamp.startsWith(todayKey)).length;
-  const stats = [
-    { label: "Total ideas", value: ideas.length },
-    { label: "Today", value: todayCount },
-    { label: "With media", value: ideas.filter((i) => i.has_media).length },
-  ];
-  return (
-    <div>
-      <p className="text-[11px] uppercase tracking-wider mb-3" style={{ color: "var(--muted-foreground)" }}>
-        Stats
-      </p>
-      <div className="grid grid-cols-3 gap-2">
-        {stats.map(({ label, value }) => (
-          <div
-            key={label}
-            className="rounded-xl px-3 py-3 text-center"
-            style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
-          >
-            <p className="text-2xl font-bold tabular-nums" style={{ color: "var(--foreground)" }}>
-              {value}
-            </p>
-            <p className="text-[10px] mt-0.5 leading-tight" style={{ color: "var(--muted-foreground)" }}>
-              {label}
-            </p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabName>("ideas");
@@ -56,8 +23,10 @@ export default function Home() {
   const [sketchOpen, setSketchOpen] = useState(false);
   const [sketchBlob, setSketchBlob] = useState<Blob | null>(null);
 
-  const { ideas, isLoading, mutate } = useIdeas();
+  const { ideas, isLoading, mutate, addIdea, removeIdea, patchIdea, starIdea } = useIdeas();
   const search = useSearch(ideas);
+
+  const starredIdeas = ideas.filter(i => i.starred);
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "var(--background)", paddingBottom: "calc(env(safe-area-inset-bottom) + 96px)" }}>
@@ -65,7 +34,12 @@ export default function Home() {
 
       <main className="px-4 pt-2 max-w-lg mx-auto">
         {activeTab === "ideas" && (
-          <IdeaFeed ideas={ideas} isLoading={isLoading} onRefresh={() => mutate()} />
+          <IdeaFeed
+            ideas={ideas}
+            isLoading={isLoading}
+            onRefresh={() => mutate()}
+            onStar={starIdea}
+          />
         )}
 
         {activeTab === "search" && (
@@ -86,15 +60,31 @@ export default function Home() {
           </>
         )}
 
+        {activeTab === "starred" && (
+          <div className="pt-2">
+            {starredIdeas.length === 0 ? (
+              <div className="text-center py-20" style={{ color: "var(--muted-foreground)" }}>
+                <p className="text-sm">No starred ideas yet.</p>
+                <p className="text-xs mt-1">Tap the star on any idea to save it here.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {starredIdeas.map(idea => (
+                  <IdeaCard
+                    key={idea.id}
+                    idea={idea}
+                    onStar={(starred) => starIdea(idea.id, starred)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === "categories" && (
           <div className="space-y-6 pt-2">
             <ThemeSelector />
-            <div>
-              <p className="text-[11px] uppercase tracking-wider mb-3" style={{ color: "var(--muted-foreground)" }}>
-                Categories
-              </p>
-              <CategoryManager />
-            </div>
+            <StatsView ideas={ideas} />
           </div>
         )}
       </main>
@@ -131,9 +121,7 @@ export default function Home() {
             <DialogTitle style={{ color: "var(--foreground)" }}>Settings</DialogTitle>
           </DialogHeader>
           <div className="space-y-6 pt-1">
-            <ThemeSelector />
             <BiometricToggle />
-            <SettingsStats ideas={ideas} />
           </div>
         </DialogContent>
       </Dialog>
