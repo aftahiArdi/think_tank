@@ -41,6 +41,15 @@ export async function deleteIdea(id: number) {
   return handleResponse<{ message: string }>(res);
 }
 
+export async function starIdea(id: number, starred: boolean): Promise<import("./types").Idea> {
+  const res = await fetch(`${API_BASE}/ideas/${id}/star`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ starred }),
+  });
+  return handleResponse<import("./types").Idea>(res);
+}
+
 export async function searchIdeas(query: string) {
   const res = await fetch(`${API_BASE}/search`, {
     method: "POST",

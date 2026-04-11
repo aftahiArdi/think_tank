@@ -19,6 +19,7 @@ export interface Idea {
   timestamp: string;
   media_type: "text" | "image" | "sketch" | "video" | "mixed";
   has_media: boolean;
+  starred: boolean;
   category: Category | null;
   media: IdeaMedia[];
 }
@@ -31,4 +32,12 @@ export interface SearchResult {
   category: Category | null;
 }
 
-export type ThemeName = "minimal-dark" | "soft-neutral" | "glass-modern";
+export type ThemeName =
+  | "minimal-dark"
+  | "soft-neutral"
+  | "glass-modern"
+  | "midnight"
+  | "moonlight"
+  | "warm-charcoal"
+  | "nord"
+  | "forest";
