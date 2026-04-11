@@ -1,5 +1,5 @@
 import useSWR from "swr";
-import { fetchIdeas, createIdea, deleteIdea, updateIdea } from "@/lib/api";
+import { fetchIdeas, createIdea, deleteIdea, updateIdea, starIdea as apiStarIdea } from "@/lib/api";
 import type { Idea } from "@/lib/types";
 
 export function useIdeas() {
@@ -8,7 +8,6 @@ export function useIdeas() {
   const ideas = data?.ideas ?? [];
 
   const addIdea = async (content: string, categoryId?: number) => {
-    // Optimistic update
     const tempId = -Date.now();
     const optimistic: Idea = {
       id: tempId,
@@ -16,6 +15,7 @@ export function useIdeas() {
       timestamp: new Date().toISOString().replace("T", " ").slice(0, 19),
       media_type: "text",
       has_media: false,
+      starred: false,
       category: null,
       media: [],
     };
@@ -53,5 +53,19 @@ export function useIdeas() {
     mutate();
   };
 
-  return { ideas, isLoading, error, mutate, addIdea, removeIdea, patchIdea };
+  const starIdea = async (id: number, starred: boolean) => {
+    const optimistic = ideas.map(i => i.id === id ? { ...i, starred } : i);
+    mutate(
+      async () => {
+        await apiStarIdea(id, starred);
+        return { ideas: optimistic, total: ideas.length };
+      },
+      {
+        optimisticData: { ideas: optimistic, total: ideas.length },
+        rollbackOnError: true,
+      }
+    );
+  };
+
+  return { ideas, isLoading, error, mutate, addIdea, removeIdea, patchIdea, starIdea };
 }
