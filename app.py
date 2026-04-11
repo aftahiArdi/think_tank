@@ -76,6 +76,8 @@ def init_db():
         cursor.execute("ALTER TABLE ideas ADD COLUMN has_media INTEGER DEFAULT 0")
     if "category_id" not in ideas_cols:
         cursor.execute("ALTER TABLE ideas ADD COLUMN category_id INTEGER REFERENCES categories(id)")
+    if "starred" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
 
     # Migrate todo tables (existing pattern)
     cursor.execute("PRAGMA table_info(todo)")
@@ -263,7 +265,7 @@ def list_ideas():
         cursor = conn.cursor()
 
         cursor.execute('''
-            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.category_id,
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
                    c.name as category_name, c.color as category_color
             FROM ideas i
             LEFT JOIN categories c ON i.category_id = c.id
@@ -291,6 +293,7 @@ def list_ideas():
                 'timestamp': row['timestamp'],
                 'media_type': row['media_type'] or 'text',
                 'has_media': bool(row['has_media']),
+                'starred': bool(row['starred']),
                 'category': None,
                 'media': media_by_idea.get(row['id'], [])
             }
@@ -342,7 +345,7 @@ def get_idea(idea_id):
         cursor = conn.cursor()
 
         cursor.execute('''
-            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.category_id,
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
                    c.name as category_name, c.color as category_color
             FROM ideas i
             LEFT JOIN categories c ON i.category_id = c.id
@@ -374,6 +377,7 @@ def get_idea(idea_id):
             'timestamp': row['timestamp'],
             'media_type': row['media_type'] or 'text',
             'has_media': bool(row['has_media']),
+            'starred': bool(row['starred']),
             'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
             'media': media,
         }
@@ -444,6 +448,55 @@ def delete_idea(idea_id):
                 os.remove(filepath)
 
         return jsonify({'message': 'Idea deleted.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/<int:idea_id>/star', methods=['PATCH'])
+def star_idea(idea_id):
+    data = request.get_json()
+    starred = bool(data.get('starred', False))
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('UPDATE ideas SET starred = ? WHERE id = ?', (int(starred), idea_id))
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'Idea not found.'}), 404
+        conn.commit()
+
+        cursor.execute('''
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                   c.name as category_name, c.color as category_color
+            FROM ideas i
+            LEFT JOIN categories c ON i.category_id = c.id
+            WHERE i.id = ?
+        ''', (idea_id,))
+        row = cursor.fetchone()
+        cursor.execute(
+            'SELECT id, filename, media_type, file_size FROM idea_media WHERE idea_id = ?',
+            (idea_id,)
+        )
+        media = [{
+            'id': m['id'],
+            'filename': m['filename'],
+            'media_type': m['media_type'],
+            'file_size': m['file_size'],
+            'url': f"/api/flask/uploads/{m['filename']}"
+        } for m in cursor.fetchall()]
+        conn.close()
+
+        return jsonify({
+            'id': row['id'],
+            'content': row['content'],
+            'timestamp': row['timestamp'],
+            'media_type': row['media_type'] or 'text',
+            'has_media': bool(row['has_media']),
+            'starred': bool(row['starred']),
+            'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
+            'media': media,
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
