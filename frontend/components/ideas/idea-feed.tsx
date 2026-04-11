@@ -15,6 +15,7 @@ interface IdeaFeedProps {
   ideas: Idea[];
   isLoading: boolean;
   onRefresh?: () => Promise<unknown>;
+  onStar?: (id: number, starred: boolean) => void;
 }
 
 const MEDIA_FILTERS: { key: MediaFilter; label: string; icon: string }[] = [
@@ -31,7 +32,7 @@ function getTodayKey() {
   return new Date().toLocaleDateString("en-CA");
 }
 
-export function IdeaFeed({ ideas, isLoading, onRefresh }: IdeaFeedProps) {
+export function IdeaFeed({ ideas, isLoading, onRefresh, onStar }: IdeaFeedProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("today");
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
 
@@ -231,7 +232,11 @@ export function IdeaFeed({ ideas, isLoading, onRefresh }: IdeaFeedProps) {
               )}
               <div className="space-y-2">
                 {group.ideas.map((idea) => (
-                  <IdeaCard key={idea.id} idea={idea} />
+                  <IdeaCard
+                    key={idea.id}
+                    idea={idea}
+                    onStar={onStar ? (starred) => onStar(idea.id, starred) : undefined}
+                  />
                 ))}
               </div>
             </div>
