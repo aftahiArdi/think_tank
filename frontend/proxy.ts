@@ -29,9 +29,11 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   if (
     pathname.startsWith("/login") ||
+    pathname.startsWith("/api/auth/biometric") ||
     pathname.startsWith("/api/auth") ||
     pathname.startsWith("/api/flask") ||
     pathname === "/manifest.json" ||
+    pathname === "/sw.js" ||
     pathname === "/icon.svg" ||
     pathname.startsWith("/icon-") ||
     pathname === "/apple-touch-icon.png"

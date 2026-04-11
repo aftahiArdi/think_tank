@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme/theme-provider";
+import { BiometricGate } from "@/components/auth/biometric-gate";
+import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 
 export const metadata: Metadata = {
@@ -34,9 +36,20 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("think-tank-theme");if(t)document.documentElement.setAttribute("data-theme",t);else document.documentElement.setAttribute("data-theme","minimal-dark")}catch(e){document.documentElement.setAttribute("data-theme","minimal-dark")}})();if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js',{scope:'/'}).catch(function(){});`,
+          }}
+        />
+      </head>
       <body>
         <ThemeProvider>
-          {children}
+          <Providers>
+            <BiometricGate>
+              {children}
+            </BiometricGate>
+          </Providers>
           <Toaster />
         </ThemeProvider>
       </body>

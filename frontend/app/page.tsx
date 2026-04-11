@@ -11,6 +11,7 @@ import { SearchResults } from "@/components/search/search-results";
 import { CategoryManager } from "@/components/categories/category-manager";
 import { ThemeSelector } from "@/components/theme/theme-selector";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { BiometricToggle } from "@/components/auth/biometric-toggle";
 import { useIdeas } from "@/lib/hooks/use-ideas";
 import { useSearch } from "@/lib/hooks/use-search";
 import type { Idea } from "@/lib/types";
@@ -131,6 +132,7 @@ export default function Home() {
           </DialogHeader>
           <div className="space-y-6 pt-1">
             <ThemeSelector />
+            <BiometricToggle />
             <SettingsStats ideas={ideas} />
           </div>
         </DialogContent>

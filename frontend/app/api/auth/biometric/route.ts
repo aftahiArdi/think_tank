@@ -1,8 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import crypto from "crypto";
 
-const PASSWORD = process.env.THINK_TANK_PASSWORD || "changeme";
 const SECRET = process.env.COOKIE_SECRET || "default-secret-change-me";
 
 function signToken(): string {
@@ -11,13 +10,7 @@ function signToken(): string {
   return `${payload}.${hmac}`;
 }
 
-export async function POST(request: NextRequest) {
-  const { password } = await request.json();
-
-  if (password !== PASSWORD) {
-    return NextResponse.json({ error: "Wrong password" }, { status: 401 });
-  }
-
+export async function POST() {
   const token = signToken();
   const response = NextResponse.json({ success: true });
 
@@ -25,7 +18,7 @@ export async function POST(request: NextRequest) {
     httpOnly: true,
     sameSite: "lax",
     secure: false,
-    maxAge: 30 * 24 * 60 * 60, // 30 days
+    maxAge: 30 * 24 * 60 * 60,
     path: "/",
   });
 
