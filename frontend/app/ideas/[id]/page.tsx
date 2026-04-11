@@ -3,8 +3,8 @@
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check } from "lucide-react";
-import { fetchIdeas, fetchIdea, deleteIdea } from "@/lib/api";
+import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check, Star } from "lucide-react";
+import { fetchIdeas, fetchIdea, deleteIdea, starIdea } from "@/lib/api";
 import { mutate as globalMutate } from "swr";
 import { formatDate, formatTime } from "@/lib/utils/dates";
 import type { Idea } from "@/lib/types";
@@ -59,6 +59,7 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copied, setCopied] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
+  const [starring, setStarring] = useState(false);
 
   const { data: feedData } = useSWR("ideas", () => fetchIdeas());
   const cached = feedData?.ideas.find(i => i.id === ideaId);
@@ -69,6 +70,20 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
   );
 
   const idea: Idea | undefined = cached ?? fetched;
+
+  const handleStar = async () => {
+    if (!idea || starring) return;
+    setStarring(true);
+    try {
+      await starIdea(idea.id, !idea.starred);
+      globalMutate("ideas").catch(() => {});
+      globalMutate(`idea-${ideaId}`).catch(() => {});
+    } catch {
+      toast.error("Failed to update star.");
+    } finally {
+      setStarring(false);
+    }
+  };
 
   const handleDelete = async () => {
     if (!idea) return;
@@ -105,14 +120,32 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
         </button>
 
         {idea && (
-          <button
-            onClick={() => setConfirmDelete(true)}
-            disabled={deleting}
-            className="w-8 h-8 rounded-lg flex items-center justify-center disabled:opacity-40"
-            style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
-          >
-            <Trash2 size={15} style={{ color: "var(--destructive)" }} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleStar}
+              disabled={starring}
+              className="w-8 h-8 rounded-lg flex items-center justify-center disabled:opacity-40"
+              style={{
+                backgroundColor: "var(--card)",
+                border: "1px solid var(--border)",
+                color: idea.starred ? "#facc15" : "var(--muted-foreground)",
+              }}
+            >
+              <Star
+                size={15}
+                fill={idea.starred ? "#facc15" : "none"}
+                strokeWidth={idea.starred ? 0 : 1.5}
+              />
+            </button>
+            <button
+              onClick={() => setConfirmDelete(true)}
+              disabled={deleting}
+              className="w-8 h-8 rounded-lg flex items-center justify-center disabled:opacity-40"
+              style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+            >
+              <Trash2 size={15} style={{ color: "var(--destructive)" }} />
+            </button>
+          </div>
         )}
       </header>
 
