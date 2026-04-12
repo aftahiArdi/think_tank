@@ -12,6 +12,7 @@ import {
 } from "@/lib/biometric";
 
 export function PasswordGate() {
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -31,11 +32,10 @@ export function PasswordGate() {
     const res = await fetch("/api/auth", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
     });
 
     if (res.ok) {
-      // If biometric is available but not set up, offer it
       if (biometricAvailable && !isBiometricEnabled()) {
         setShowBiometricSetup(true);
         setLoading(false);
@@ -44,7 +44,7 @@ export function PasswordGate() {
       router.push("/");
       router.refresh();
     } else {
-      setError("Wrong password");
+      setError("Invalid username or password");
       setPassword("");
     }
     setLoading(false);
@@ -70,26 +70,16 @@ export function PasswordGate() {
         <div className="w-full max-w-xs space-y-6 text-center">
           <div
             className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto"
-            style={{
-              backgroundColor: "var(--card)",
-              border: "1px solid var(--border)",
-            }}
+            style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
           >
             <Fingerprint size={40} style={{ color: "var(--primary)" }} />
           </div>
           <div>
-            <h2
-              className="text-xl font-bold"
-              style={{ color: "var(--foreground)" }}
-            >
+            <h2 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>
               Enable Face ID?
             </h2>
-            <p
-              className="text-sm mt-2"
-              style={{ color: "var(--muted-foreground)" }}
-            >
-              Unlock Think Tank with Face ID instead of typing your password
-              every time.
+            <p className="text-sm mt-2" style={{ color: "var(--muted-foreground)" }}>
+              Unlock Think Tank with Face ID instead of typing your password every time.
             </p>
           </div>
           {error && <p className="text-red-500 text-sm">{error}</p>}
@@ -114,23 +104,39 @@ export function PasswordGate() {
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <form onSubmit={handleSubmit} className="w-full max-w-xs space-y-4">
-        <h1 className="text-2xl font-bold text-center"
-            style={{ color: "var(--foreground)" }}>
+        <h1
+          className="text-2xl font-bold text-center"
+          style={{ color: "var(--foreground)" }}
+        >
           think tank
         </h1>
+        <Input
+          type="text"
+          placeholder="Username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          autoFocus
+          autoComplete="username"
+          autoCapitalize="none"
+          className="text-center"
+        />
         <Input
           type="password"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          autoFocus
+          autoComplete="current-password"
           className="text-center"
         />
         {error && (
           <p className="text-red-500 text-sm text-center">{error}</p>
         )}
-        <Button type="submit" className="w-full" disabled={loading}>
-          {loading ? "..." : "Enter"}
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={loading || !username || !password}
+        >
+          {loading ? "..." : "Sign in"}
         </Button>
       </form>
     </div>
