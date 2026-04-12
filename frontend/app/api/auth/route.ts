@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import http from "node:http";
 
 const SECRET = process.env.COOKIE_SECRET || "default-secret-change-me";
 const API_URL = process.env.API_URL || "http://localhost:6000";
@@ -20,6 +21,34 @@ async function signUsername(username: string): Promise<string> {
   return `${username}.${sigHex}`;
 }
 
+function httpPost(url: string, body: string): Promise<{ status: number; data: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port,
+        path: parsed.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () =>
+          resolve({ status: res.statusCode || 500, data: Buffer.concat(chunks).toString() })
+        );
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
   const username = (body.username || "").trim().toLowerCase();
@@ -29,13 +58,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Missing username or password" }, { status: 400 });
   }
 
-  const res = await fetch(`${API_URL}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
+  const res = await httpPost(
+    `${API_URL}/auth/login`,
+    JSON.stringify({ username, password })
+  );
 
-  if (!res.ok) {
+  if (res.status !== 200) {
     return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
   }
 
