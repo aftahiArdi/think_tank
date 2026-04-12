@@ -24,7 +24,6 @@ services:
     environment:
       - PORT=3004
       - API_URL=http://flask:6000
-      - THINK_TANK_PASSWORD=${THINK_TANK_PASSWORD}
       - COOKIE_SECRET=${COOKIE_SECRET}
     depends_on:
       - flask
