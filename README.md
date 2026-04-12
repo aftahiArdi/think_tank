@@ -1,219 +1,157 @@
 # Think Tank
 
-Personal idea capture and to-do tracker with a Streamlit UI, Flask API, semantic search, and daily email digests.
+Personal idea capture PWA. Built for ADHD — minimum friction, speed above everything. Capture raw thoughts (text, images, sketches, video, voice) from an iPhone. Come back later to search, star, and share.
 
 ## Architecture
 
 ```
-                  ┌───────────────┐
-  iOS Shortcut ──▶│  Flask API    │
-                  │  :6000        │
-                  └──────┬────────┘
-                         │
-                  ┌──────┴────────┐
-                  │  Streamlit UI │──▶ OpenAI Embeddings
-                  │  :8502        │    (semantic search)
-                  └──────┬────────┘
-                         │
-                  ┌──────┴────────┐
-                  │  SQLite       │
-                  │  (notes.db)   │
-                  └──────┬────────┘
-                         │
-           ┌─────────────┼─────────────┐
-           │             │             │
-     Daily Email    Health Check   Categorize
-     (cron, 8am)    (cron)         (manual)
+iPhone PWA (Tailscale Funnel)
+  → Next.js 16 frontend       :3004   App shell, auth, API proxy
+  → Flask / Gunicorn API      :6000   All data endpoints
+  → SQLite (notes.db)                 Single-file database (WAL mode)
+  → uploads/                          Media files, per-user subdirectories
 ```
 
-Both services run as Docker containers via Docker Compose, sharing `notes.db` through a bind mount.
+Both services run as Docker containers via Docker Compose.
 
-## Prerequisites
+## Stack
 
-- Docker and Docker Compose
-- A `.env` file (see below)
-- (For semantic search) An OpenAI API key
+**Frontend:** Next.js 16 App Router · React 19 · TypeScript · Tailwind · shadcn/ui · SWR · Fuse.js · Vaul · Sonner
 
-## Quick Start
+**Backend:** Flask · Gunicorn (1 worker, 8 threads) · SQLite WAL · Vancouver timezone throughout
 
-### 1. Create a `.env` file
+## Features
+
+### Capture
+- Text, image, video, voice memo, and freehand sketch
+- Bottom sheet with zero friction — no categories at capture time
+- Optimistic updates: text ideas appear instantly, media uploads in background
+- Mic stream kept alive within a session — no repeated permission prompts
+
+### Ideas feed
+- Chronological, grouped by day
+- Filter by media type: All · Images · Video · Voice · Sketches
+- Pull-to-refresh, starred ideas tab, "Flashback" (on this day in past years)
+- Full-text fuzzy search (Fuse.js) + semantic search (OpenAI embeddings)
+
+### Link previews
+- YouTube URLs → rich preview card via YouTube oEmbed (thumbnail, title, channel)
+- All other URLs → preview card via microlink.io (og:title, og:description, og:image)
+- SWR-cached for 1 hour per URL
+
+### Shared feed
+- Share any idea to a shared feed visible to all users
+- Other users can star shared ideas — appear in their Starred tab with author avatar
+- Feed grouped by day, tap any post to open full detail page
+- Unshare your own posts
+
+### Multi-user
+- Username + password login, HMAC-signed cookie (30-day TTL)
+- WebAuthn Face ID lock (sessionStorage, no server round trip)
+- Per-user upload directories (`uploads/<username>/`)
+- Avatar upload in settings
+
+### Stats
+- Idea count breakdown by type (text, image, video, voice, sketch, mixed)
+- Animated count-up on load
+
+### Themes
+8 built-in themes: Minimal Dark · Soft Neutral · Glass Modern · Midnight · Moonlight · Warm Charcoal · Nord · Forest
+
+### Native iOS feel
+- View Transitions API for smooth page slides (iOS 18+ Safari)
+- No tap highlight flash, no 300ms delay on buttons/links
+- Press-to-scale on cards, antialiased fonts
+
+## Auth flow
+
+1. **Cookie auth** — middleware checks `think_tank_auth` HMAC cookie. Unauthenticated → `/login`.
+2. **Face ID lock** — `BiometricGate` wraps all pages, uses WebAuthn. Unlocked state lives in `sessionStorage` only — clears when PWA is closed.
+
+## Running
+
+```bash
+# Start
+cd /home/ardi/Projects/think_tank
+docker compose up -d
+
+# Rebuild frontend after changes
+docker compose build --no-cache nextjs && docker compose up -d --force-recreate nextjs
+
+# Rebuild API after changes
+docker compose build --no-cache flask && docker compose up -d --force-recreate flask
+
+# Logs
+docker logs think_tank_frontend --tail=50
+docker logs think_tank_api --tail=50
+```
+
+- Frontend: `http://localhost:3004` / `https://ardi.tail351339.ts.net`
+- API: `http://localhost:6000`
+
+## Environment
+
+`.env` in the project root:
 
 ```
 OPENAI_API_KEY=sk-...
-MAIL_SERVER=smtp.gmail.com
-MAIL_PORT=587
-MAIL_USE_TLS=True
-MAIL_USERNAME=your_email@gmail.com
-MAIL_PASSWORD=your_gmail_app_password
-MAIL_DEFAULT_SENDER=your_email@gmail.com
+COOKIE_SECRET=<random string>
 ```
 
-### 2. Build and run
+## Database schema
 
-```bash
-./deploy.sh
+SQLite at `notes.db` (bind-mounted, never commit). WAL mode enabled.
+
+| Table | Purpose |
+|-------|---------|
+| `users` | username, hashed password, avatar_filename |
+| `ideas` | content, timestamp, media_type, owner_username, embedding |
+| `idea_media` | filename, media_type, file_size, linked to idea |
+| `categories` | user-defined categories with color + sort order |
+| `idea_categories` | many-to-many ideas ↔ categories |
+| `shared_feed` | idea_id, shared_by, shared_at (UNIQUE on idea_id) |
+| `feed_stars` | user_id, idea_id (UNIQUE per pair) |
+
+## API conventions
+
+All browser→Flask calls go through the Next.js proxy at `/api/flask/*`. Never call Flask directly from the browser. Direct access (iOS Shortcuts, cron) hits port 6000 on the host.
+
+## Key files
+
+```
+app.py                              Flask API (all endpoints)
+Dockerfile.api                      Flask Docker image
+docker-compose.yml                  Service definitions
+send_daily_email.py                 8am daily email digest (cron)
+healthcheck.py                      Service health checker
+
+frontend/
+  app/
+    layout.tsx                      Root layout — BiometricGate, SWR config, service worker
+    page.tsx                        Main app shell (tabs: Ideas, Search, Feed, Starred, Stats)
+    login/page.tsx                  Login page
+    ideas/[id]/page.tsx             Idea detail / edit / share
+    feed/[ideaId]/page.tsx          Feed post detail
+    api/auth/route.ts               Password login, sets cookie
+    api/flask/[...path]/route.ts    Proxy to Flask :6000
+    api/yt-preview/route.ts         YouTube oEmbed proxy (cached 1h)
+  components/
+    auth/                           BiometricGate, PasswordGate, BiometricToggle
+    ideas/                          IdeaCard, IdeaFeed, CaptureSheet, Flashback
+    feed/                           FeedView, FeedPostCard, AvatarCircle, ShareConfirmSheet
+    stats/                          StatsView
+    ui/                             GlowCard, VoiceMemoPlayer, YouTubePreview, LinkPreview
+  lib/
+    api.ts                          All fetch calls to /api/flask/*
+    hooks/use-ideas.ts              SWR hook — ideas with optimistic mutations
+    hooks/use-feed.ts               SWR hook — feed + starred posts
+    biometric.ts                    WebAuthn helpers
+  proxy.ts                          Next.js middleware — cookie auth check
+  public/sw.js                      Service worker — cache-first for static assets
 ```
 
-Or manually:
+## Data persistence
 
-```bash
-docker build -t think_tank .
-docker compose up -d
-```
-
-### 3. Verify
-
-```bash
-docker compose ps
-```
-
-- Streamlit UI: `http://localhost:8502`
-- Flask API: `http://localhost:6000`
-
-## API Endpoints
-
-### `POST /add_note`
-
-Capture an idea.
-
-```bash
-curl -X POST http://localhost:6000/add_note \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Try a new synth plugin"}'
-```
-
-### `POST /add_todo`
-
-Add a task with a size.
-
-```bash
-curl -X POST http://localhost:6000/add_todo \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Book dentist appointment", "size": "big"}'
-```
-
-Size options: `tiny`, `small`, `big`, `project`
-
-### `GET /list_todos`
-
-List all open tasks.
-
-### `POST /complete_todo`
-
-Mark a task as done. Body: `{"id": 123}`
-
-### `POST /delete_todo`
-
-Delete a task. Body: `{"id": 123}`
-
-## Streamlit UI
-
-The dashboard at `:8502` has four tabs:
-
-| Tab | Description |
-|-----|-------------|
-| **Focus** | Top 5 most urgent tasks, sorted by age and size weight. Color-coded: green (0-2d), orange (3-6d), red (7+d) |
-| **All Tasks** | Add new tasks, view all open todos, completed tasks with time-to-complete stats |
-| **Ideas** | Chronological list of captured ideas grouped by date |
-| **Search** | Semantic search over ideas using OpenAI embeddings with cosine similarity |
-
-## Database Schema
-
-SQLite database at `notes.db`. Tables are auto-created by `app.py` on startup.
-
-**ideas**
-| Column | Type | Notes |
-|--------|------|-------|
-| id | INTEGER | Primary key, autoincrement |
-| content | TEXT | Idea text |
-| timestamp | DATETIME | Vancouver time |
-| embedding | TEXT | JSON array from OpenAI (populated lazily) |
-
-**todo**
-| Column | Type | Notes |
-|--------|------|-------|
-| id | INTEGER | Primary key, autoincrement |
-| content | TEXT | Task text |
-| size | TEXT | `tiny`, `small`, `big`, or `project` |
-| timestamp | DATETIME | Vancouver time |
-
-**completed_todo**
-| Column | Type | Notes |
-|--------|------|-------|
-| id | INTEGER | Primary key, autoincrement |
-| content | TEXT | Task text |
-| size | TEXT | `tiny`, `small`, `big`, or `project` |
-| timestamp | DATETIME | When created |
-| completed_timestamp | DATETIME | When marked done |
-
-**ideas_categorized** (created by `categorize_ideas.py`)
-| Column | Type | Notes |
-|--------|------|-------|
-| id | INTEGER | From ideas table |
-| content | TEXT | Idea text |
-| timestamp | DATETIME | Original timestamp |
-| category_label | TEXT | Assigned category |
-
-## Task Prioritization
-
-Tasks in the Focus tab are ranked by:
-1. Age in days (older = higher priority)
-2. Size weight: project (4) > big (3) > small (2) > tiny (1)
-
-## Semantic Search
-
-- Uses OpenAI `text-embedding-3-small` model
-- Embeddings are stored in the `ideas.embedding` column and auto-populated on first load
-- Search computes cosine similarity and returns the top 5 matches
-
-## Categorization
-
-`categorize_ideas.py` assigns ideas to one of 7 categories using `all-mpnet-base-v2` sentence-transformer embeddings:
-
-- Misc, Tech / Experiments, Books, Music Consumption / Making, Personal Life / Philosophical, Productivity, Gym / Health
-
-This requires `torch` and `sentence-transformers` which are not in the Docker image. Run it locally in a venv:
-
-```bash
-source venv/bin/activate
-python categorize_ideas.py
-```
-
-## Daily Email
-
-`send_daily_email.py` sends an HTML digest with today's ideas and top 5 tasks. Set it up as a cron job:
-
-```bash
-crontab -e
-# Add:
-0 8 * * * docker exec think_tank-flask-1 python /app/send_daily_email.py
-```
-
-## Health Check
-
-`healthcheck.py` checks if the Docker containers are running and sends an alert email if any are down. Add to cron if desired.
-
-## Time Zones
-
-All timestamps are stored in Vancouver time (`America/Vancouver`). No UTC conversion is used in this project.
-
-## Data
-
-`notes.db` is bind-mounted into the containers, so data persists on the host. The containers never hold their own copy.
-
-## File Overview
-
-| File | Purpose |
-|------|---------|
-| `app.py` | Flask API + database initialization |
-| `stl.py` | Streamlit UI (4-tab dashboard) |
-| `categorize_ideas.py` | ML-based idea categorization (runs outside Docker) |
-| `send_daily_email.py` | Daily HTML email digest |
-| `healthcheck.py` | Docker service health monitor |
-| `start_apps.sh` | Manual startup script (Streamlit + Gunicorn) |
-| `deploy.sh` | Docker build and deploy script |
-| `Dockerfile` | Container image definition |
-| `docker-compose.yml` | Multi-container orchestration |
-| `requirements.txt` | Python dependencies |
-| `notes.db` | SQLite database |
-| `database.sql` | Legacy schema (unused) |
+- `notes.db` — SQLite, bind-mounted at `/home/ardi/Projects/think_tank/notes.db`
+- `uploads/` — media files, bind-mounted. Per-user subdirs: `uploads/<username>/`, `uploads/avatars/`
+- Both are gitignored. Never delete, never commit.
