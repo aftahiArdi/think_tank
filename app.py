@@ -595,12 +595,15 @@ def upload_file():
     if not any(content_type.startswith(p) for p in ALLOWED_MIME_PREFIXES):
         return jsonify({'error': f'File type not allowed: {content_type or "unknown"}'}), 400
 
+    user_id = get_user_id()
+    username = request.headers.get('X-Think-Tank-User', 'unknown').strip().lower()
+
     try:
         sanitized = sanitize_filename(file.filename)
-        stored_filename = f"{idea_id}_{sanitized}"
+        stored_filename = f"{username}/{idea_id}_{sanitized}"
         filepath = os.path.join('uploads', stored_filename)
 
-        os.makedirs('uploads', exist_ok=True)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         file.save(filepath)
         file_size = os.path.getsize(filepath)
 
