@@ -9,6 +9,7 @@ import {
   isBiometricAvailable,
   isBiometricEnabled,
   registerBiometric,
+  setCurrentUsername,
 } from "@/lib/biometric";
 
 export function PasswordGate() {
@@ -36,6 +37,7 @@ export function PasswordGate() {
     });
 
     if (res.ok) {
+      setCurrentUsername(username.trim().toLowerCase());
       if (biometricAvailable && !isBiometricEnabled()) {
         setShowBiometricSetup(true);
         setLoading(false);

@@ -9,7 +9,7 @@ import { formatDate } from "@/lib/utils/dates";
 import { Skeleton } from "@/components/ui/skeleton";
 
 type ViewMode = "today" | "all";
-type MediaFilter = "all" | "text" | "image" | "sketch" | "video";
+type MediaFilter = "all" | "text" | "image" | "sketch" | "video" | "audio";
 
 interface IdeaFeedProps {
   ideas: Idea[];
@@ -24,6 +24,7 @@ const MEDIA_FILTERS: { key: MediaFilter; label: string; icon: string }[] = [
   { key: "image",  label: "Photo",  icon: "🖼" },
   { key: "sketch", label: "Sketch", icon: "✍️" },
   { key: "video",  label: "Video",  icon: "🎥" },
+  { key: "audio",  label: "Voice",  icon: "🎙️" },
 ];
 
 const PULL_THRESHOLD = 80;

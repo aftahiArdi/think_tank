@@ -3,11 +3,14 @@
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check, Star } from "lucide-react";
-import { fetchIdeas, fetchIdea, deleteIdea, starIdea } from "@/lib/api";
+import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check, Star, Share2 } from "lucide-react";
+import { fetchIdeas, fetchIdea, deleteIdea, starIdea, shareIdea, unshareIdea } from "@/lib/api";
+import { ShareConfirmSheet } from "@/components/feed/share-confirm-sheet";
+import { getCurrentUsername } from "@/lib/biometric";
 import { mutate as globalMutate } from "swr";
 import { formatDate, formatTime } from "@/lib/utils/dates";
 import type { Idea } from "@/lib/types";
+import { VoiceMemoPlayer } from "@/components/ui/voice-memo-player";
 import { toast } from "sonner";
 
 function copyText(text: string) {
@@ -60,6 +63,9 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
   const [copied, setCopied] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const [starring, setStarring] = useState(false);
+  const [shareSheetOpen, setShareSheetOpen] = useState(false);
+  const [isSharedOverride, setIsSharedOverride] = useState<boolean | null>(null);
+  const currentUsername = getCurrentUsername();
 
   const { data: feedData } = useSWR("ideas", () => fetchIdeas());
   const cached = feedData?.ideas.find(i => i.id === ideaId);
@@ -70,6 +76,9 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
   );
 
   const idea: Idea | undefined = cached ?? fetched;
+
+  // Derive isShared: use optimistic override when set, else fall back to idea data (no extra render needed)
+  const isShared = isSharedOverride ?? idea?.is_shared ?? null;
 
   const handleStar = async () => {
     if (!idea || starring) return;
@@ -95,6 +104,30 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
     } catch {
       toast.error("Failed to delete idea.");
       setDeleting(false);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!idea) return;
+    setIsSharedOverride(true);
+    try {
+      await shareIdea(idea.id);
+      globalMutate("feed").catch(() => {});
+    } catch {
+      setIsSharedOverride(null);
+      toast.error("Failed to share.");
+    }
+  };
+
+  const handleUnshare = async () => {
+    if (!idea) return;
+    setIsSharedOverride(false);
+    try {
+      await unshareIdea(idea.id);
+      globalMutate("feed").catch(() => {});
+    } catch {
+      setIsSharedOverride(null);
+      toast.error("Failed to unshare.");
     }
   };
 
@@ -221,6 +254,8 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
                     className="w-full rounded-2xl"
                     style={{ backgroundColor: "var(--card)" }}
                   />
+                ) : m.media_type === "audio" ? (
+                  <VoiceMemoPlayer key={m.id} src={m.url} />
                 ) : (
                   <button
                     key={m.id}
@@ -251,6 +286,39 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
               <p className="text-sm italic" style={{ color: "var(--muted-foreground)" }}>
                 Empty idea.
               </p>
+            </div>
+          )}
+
+          {/* Share to feed — only shown for own ideas */}
+          {idea.owner_username === currentUsername && isShared !== null && (
+            <div>
+              {isShared ? (
+                <button
+                  onClick={handleUnshare}
+                  className="w-full py-3 rounded-2xl text-sm font-medium flex items-center justify-center gap-2"
+                  style={{
+                    backgroundColor: "var(--card)",
+                    border: "1px solid var(--border)",
+                    color: "var(--muted-foreground)",
+                  }}
+                >
+                  <Share2 size={15} />
+                  Shared to feed · Remove
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShareSheetOpen(true)}
+                  className="w-full py-3 rounded-2xl text-sm font-semibold flex items-center justify-center gap-2"
+                  style={{
+                    backgroundColor: "var(--card)",
+                    border: "1px solid var(--border)",
+                    color: "var(--foreground)",
+                  }}
+                >
+                  <Share2 size={15} />
+                  Share to feed
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -307,6 +375,13 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
           <img src={lightbox} alt="" className="max-w-full max-h-full object-contain p-4" />
         </div>
       )}
+
+      <ShareConfirmSheet
+        open={shareSheetOpen}
+        onClose={() => setShareSheetOpen(false)}
+        onConfirm={handleShare}
+        content={idea?.content ?? ""}
+      />
     </div>
   );
 }

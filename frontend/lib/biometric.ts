@@ -1,22 +1,43 @@
 /**
  * Biometric (Face ID / Touch ID) lock using WebAuthn.
  * This is a LOCAL device lock — the cookie handles real auth.
- * We register a platform authenticator credential and use it
- * to gate app access on each open.
+ *
+ * We do NOT store the credential ID. Instead, we let the platform
+ * (iCloud Keychain) find the credential by origin. This avoids the
+ * "credential ID stale" failure where iCloud Keychain syncs or rotates
+ * the passkey but our stored ID no longer matches.
+ *
+ * Credentials are scoped per-username via the WebAuthn user.id field,
+ * and the enabled flag in localStorage is keyed per-username.
  */
 
-const CREDENTIAL_KEY = "think-tank-biometric-cred";
-const BIOMETRIC_ENABLED_KEY = "think-tank-biometric-enabled";
+const CURRENT_USER_KEY = "tt-current-user";
 
-function bufferToBase64(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+/**
+ * Get the currently logged-in username.
+ * Reads from the non-HttpOnly `think_tank_user` cookie (set by server at login) —
+ * synchronous, zero network cost. Falls back to localStorage for existing sessions
+ * that predate the cookie being added.
+ */
+export function getCurrentUsername(): string | null {
+  if (typeof window === "undefined") return null;
+  const match = document.cookie
+    .split("; ")
+    .find((c) => c.startsWith("think_tank_user="));
+  if (match) {
+    const val = match.slice("think_tank_user=".length);
+    if (val) return val;
+  }
+  return localStorage.getItem(CURRENT_USER_KEY) || null;
 }
 
-function base64ToBuffer(b64: string): ArrayBuffer {
-  const bin = atob(b64);
-  const buf = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-  return buf.buffer;
+/** Called by password-gate after successful login — belt-and-suspenders localStorage backup. */
+export function setCurrentUsername(username: string): void {
+  localStorage.setItem(CURRENT_USER_KEY, username);
+}
+
+function enabledKey(username: string): string {
+  return `think-tank-biometric-enabled:${username}`;
 }
 
 export function isBiometricSupported(): boolean {
@@ -38,15 +59,21 @@ export async function isBiometricAvailable(): Promise<boolean> {
 
 export function isBiometricEnabled(): boolean {
   if (typeof window === "undefined") return false;
-  return localStorage.getItem(BIOMETRIC_ENABLED_KEY) === "true";
+  const username = getCurrentUsername();
+  if (!username) return false;
+  return localStorage.getItem(enabledKey(username)) === "true";
 }
 
 export function disableBiometric(): void {
-  localStorage.removeItem(BIOMETRIC_ENABLED_KEY);
-  localStorage.removeItem(CREDENTIAL_KEY);
+  const username = getCurrentUsername();
+  if (!username) return;
+  localStorage.removeItem(enabledKey(username));
 }
 
 export async function registerBiometric(): Promise<boolean> {
+  const username = getCurrentUsername();
+  if (!username) return false;
+
   try {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     const credential = (await navigator.credentials.create({
@@ -54,9 +81,9 @@ export async function registerBiometric(): Promise<boolean> {
         challenge,
         rp: { name: "Think Tank" },
         user: {
-          id: new TextEncoder().encode("think-tank-user"),
-          name: "Think Tank User",
-          displayName: "Think Tank User",
+          id: new TextEncoder().encode(username),
+          name: username,
+          displayName: username,
         },
         pubKeyCredParams: [
           { alg: -7, type: "public-key" },   // ES256
@@ -72,11 +99,9 @@ export async function registerBiometric(): Promise<boolean> {
 
     if (!credential) return false;
 
-    localStorage.setItem(
-      CREDENTIAL_KEY,
-      bufferToBase64(credential.rawId)
-    );
-    localStorage.setItem(BIOMETRIC_ENABLED_KEY, "true");
+    // Only store the enabled flag — NOT the credential ID.
+    // The platform (iCloud Keychain) owns the credential and finds it by origin.
+    localStorage.setItem(enabledKey(username), "true");
     return true;
   } catch {
     return false;
@@ -84,21 +109,17 @@ export async function registerBiometric(): Promise<boolean> {
 }
 
 export async function verifyBiometric(): Promise<boolean> {
-  try {
-    const storedId = localStorage.getItem(CREDENTIAL_KEY);
-    if (!storedId) return false;
+  const username = getCurrentUsername();
+  if (!username) return false;
 
+  try {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
+    // Empty allowCredentials — let the platform find any credential for this origin.
+    // Since this is a personal Tailscale URL, there's only one passkey per user.
     const assertion = await navigator.credentials.get({
       publicKey: {
         challenge,
-        allowCredentials: [
-          {
-            id: base64ToBuffer(storedId),
-            type: "public-key",
-            transports: ["internal"],
-          },
-        ],
+        allowCredentials: [],
         userVerification: "required",
         timeout: 60000,
       },

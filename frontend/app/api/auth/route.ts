@@ -68,12 +68,23 @@ export async function POST(request: NextRequest) {
   }
 
   const token = await signUsername(username);
+  const jar = await cookies();
 
-  (await cookies()).set("think_tank_auth", token, {
+  jar.set("think_tank_auth", token, {
     httpOnly: true,
     sameSite: "lax",
     secure: false,
-    maxAge: 30 * 24 * 60 * 60, // 30 days
+    maxAge: 30 * 24 * 60 * 60,
+    path: "/",
+  });
+
+  // Non-HttpOnly: JS-readable username for client-side biometric key scoping.
+  // Not a secret — the real auth token stays HttpOnly.
+  jar.set("think_tank_user", username, {
+    httpOnly: false,
+    sameSite: "lax",
+    secure: false,
+    maxAge: 30 * 24 * 60 * 60,
     path: "/",
   });
 

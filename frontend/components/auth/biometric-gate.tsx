@@ -1,18 +1,42 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { isBiometricEnabled, verifyBiometric } from "@/lib/biometric";
+import { usePathname } from "next/navigation";
+import { isBiometricEnabled, verifyBiometric, setCurrentUsername, getCurrentUsername } from "@/lib/biometric";
 import { Fingerprint } from "lucide-react";
 
 const SESSION_KEY = "tt-unlocked";
 
 export function BiometricGate({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [state, setState] = useState<"checking" | "locked" | "unlocked">("checking");
   const [error, setError] = useState("");
   const prompted = useRef(false);
 
   useEffect(() => {
-    // Runs client-side only — check local state immediately, no network needed
+    // Skip biometric gate on login page — user needs to enter credentials
+    if (pathname === "/login") {
+      setState("unlocked");
+      return;
+    }
+    // Bootstrap username from server (handles existing sessions where localStorage is empty)
+    void bootstrapAndCheck();
+  }, []);
+
+  async function bootstrapAndCheck() {
+    // Fast path: username already known from cookie or localStorage — no network call
+    if (!getCurrentUsername()) {
+      // One-time fallback for existing sessions that predate the think_tank_user cookie
+      try {
+        const res = await fetch("/api/whoami");
+        if (res.ok) {
+          const { username } = await res.json();
+          setCurrentUsername(username);
+        }
+      } catch {
+        // ignore — proceed with whatever state we have
+      }
+    }
     if (!isBiometricEnabled()) {
       setState("unlocked");
       return;
@@ -23,7 +47,7 @@ export function BiometricGate({ children }: { children: React.ReactNode }) {
     }
     setState("locked");
     doPrompt();
-  }, []);
+  }
 
   async function doPrompt() {
     if (prompted.current) return;

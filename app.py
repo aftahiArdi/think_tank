@@ -77,6 +77,17 @@ def init_db():
         )
     ''')
 
+    # shared_feed table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS shared_feed (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            shared_at DATETIME NOT NULL,
+            UNIQUE(idea_id)
+        )
+    ''')
+
     # Migrate ideas table: add columns if missing
     cursor.execute("PRAGMA table_info(ideas)")
     ideas_cols = [col[1] for col in cursor.fetchall()]
@@ -112,6 +123,12 @@ def init_db():
         cursor.execute("ALTER TABLE completed_todo ADD COLUMN size TEXT DEFAULT 'small'")
     if "completed_timestamp" not in completed_cols:
         cursor.execute("ALTER TABLE completed_todo ADD COLUMN completed_timestamp DATETIME")
+
+    # Migrate users table: add avatar_filename if missing
+    cursor.execute("PRAGMA table_info(users)")
+    user_cols = [r[1] for r in cursor.fetchall()]
+    if "avatar_filename" not in user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN avatar_filename TEXT")
 
     # NOTE: Default category seeding removed — handled per-user by create_users.py
 
@@ -298,7 +315,7 @@ def delete_todo():
 
 # --- Ideas API ---
 
-ALLOWED_MIME_PREFIXES = ('image/', 'video/')
+ALLOWED_MIME_PREFIXES = ('image/', 'video/', 'audio/')
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
@@ -323,9 +340,13 @@ def list_ideas():
 
         cursor.execute('''
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
-                   c.name as category_name, c.color as category_color
+                   c.name as category_name, c.color as category_color,
+                   u.username as owner_username,
+                   CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
             FROM ideas i
             LEFT JOIN categories c ON i.category_id = c.id
+            LEFT JOIN users u ON i.user_id = u.id
+            LEFT JOIN shared_feed sf ON sf.idea_id = i.id
             WHERE i.user_id = ?
             ORDER BY i.timestamp DESC
         ''', (user_id,))
@@ -354,6 +375,8 @@ def list_ideas():
                 'media_type': row['media_type'] or 'text',
                 'has_media': bool(row['has_media']),
                 'starred': bool(row['starred']),
+                'owner_username': row['owner_username'],
+                'is_shared': bool(row['is_shared']),
                 'category': None,
                 'media': media_by_idea.get(row['id'], [])
             }
@@ -408,9 +431,13 @@ def get_idea(idea_id):
 
         cursor.execute('''
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
-                   c.name as category_name, c.color as category_color
+                   c.name as category_name, c.color as category_color,
+                   u.username as owner_username,
+                   CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
             FROM ideas i
             LEFT JOIN categories c ON i.category_id = c.id
+            LEFT JOIN users u ON i.user_id = u.id
+            LEFT JOIN shared_feed sf ON sf.idea_id = i.id
             WHERE i.id = ? AND i.user_id = ?
         ''', (idea_id, user_id))
         row = cursor.fetchone()
@@ -439,6 +466,8 @@ def get_idea(idea_id):
             'media_type': row['media_type'] or 'text',
             'has_media': bool(row['has_media']),
             'starred': bool(row['starred']),
+            'owner_username': row['owner_username'],
+            'is_shared': bool(row['is_shared']),
             'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
             'media': media,
         }), 200
@@ -611,6 +640,8 @@ def upload_file():
             media_type = 'sketch'
         elif content_type.startswith('image/'):
             media_type = 'image'
+        elif content_type.startswith('audio/'):
+            media_type = 'audio'
         else:
             media_type = 'video'
 
@@ -654,6 +685,185 @@ def upload_file():
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
     return send_from_directory('uploads', filename)
+
+
+# --- Feed API ---
+
+@app.route('/feed', methods=['GET'])
+def get_feed():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT sf.id, sf.idea_id, sf.user_id, sf.shared_at,
+                   i.content,
+                   u.username as author_username,
+                   u.avatar_filename
+            FROM shared_feed sf
+            JOIN ideas i ON i.id = sf.idea_id
+            JOIN users u ON u.id = sf.user_id
+            ORDER BY sf.shared_at DESC
+        ''')
+        rows = cursor.fetchall()
+
+        idea_ids = [r['idea_id'] for r in rows]
+        media_by_idea = {}
+        if idea_ids:
+            placeholders = ','.join('?' * len(idea_ids))
+            cursor.execute(
+                f'SELECT id, idea_id, filename, media_type, file_size FROM idea_media WHERE idea_id IN ({placeholders})',
+                idea_ids
+            )
+            for m in cursor.fetchall():
+                media_by_idea.setdefault(m['idea_id'], []).append({
+                    'id': m['id'],
+                    'media_type': m['media_type'],
+                    'file_size': m['file_size'],
+                    'url': f"/api/flask/uploads/{m['filename']}"
+                })
+
+        posts = []
+        for row in rows:
+            avatar_url = None
+            if row['avatar_filename']:
+                avatar_url = f"/api/flask/uploads/avatars/{row['avatar_filename']}"
+            posts.append({
+                'id': row['id'],
+                'idea_id': row['idea_id'],
+                'shared_at': row['shared_at'],
+                'author': {
+                    'username': row['author_username'],
+                    'avatar_url': avatar_url,
+                },
+                'content': row['content'],
+                'media': media_by_idea.get(row['idea_id'], []),
+                'is_mine': row['user_id'] == user_id,
+            })
+
+        conn.close()
+        return jsonify({'posts': posts}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/feed/share/<int:idea_id>', methods=['POST'])
+def share_idea(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT id FROM ideas WHERE id = ? AND user_id = ?', (idea_id, user_id))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Idea not found or not yours'}), 403
+
+        vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            cursor.execute(
+                'INSERT INTO shared_feed (idea_id, user_id, shared_at) VALUES (?, ?, ?)',
+                (idea_id, user_id, vancouver_time)
+            )
+            shared_id = cursor.lastrowid
+        except sqlite3.IntegrityError:
+            conn.close()
+            return jsonify({'error': 'Already shared'}), 409
+
+        conn.commit()
+        conn.close()
+        return jsonify({'id': shared_id}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/feed/share/<int:idea_id>', methods=['DELETE'])
+def unshare_idea(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'DELETE FROM shared_feed WHERE idea_id = ? AND user_id = ?',
+            (idea_id, user_id)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Unshared'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# --- Profile API ---
+
+@app.route('/profile', methods=['GET'])
+def get_profile():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('SELECT username, avatar_filename FROM users WHERE id = ?', (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({'error': 'User not found'}), 404
+        avatar_url = None
+        if row['avatar_filename']:
+            avatar_url = f"/api/flask/uploads/avatars/{row['avatar_filename']}"
+        return jsonify({'username': row['username'], 'avatar_url': avatar_url}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/profile/avatar', methods=['POST'])
+def upload_avatar():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    username = request.headers.get('X-Think-Tank-User', 'unknown').strip().lower()
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Empty filename'}), 400
+
+    content_type = file.content_type or ''
+    if not content_type.startswith('image/'):
+        return jsonify({'error': 'Only images allowed'}), 400
+
+    ext_map = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic'}
+    ext = ext_map.get(content_type, 'jpg')
+    filename = f"{username}.{ext}"
+    filepath = os.path.join('uploads', 'avatars', filename)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+    try:
+        file.save(filepath)
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET avatar_filename = ? WHERE id = ?', (filename, user_id))
+        conn.commit()
+        conn.close()
+        import time
+        avatar_url = f"/api/flask/uploads/avatars/{filename}?v={int(time.time())}"
+        return jsonify({'avatar_url': avatar_url}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # --- Categories API ---

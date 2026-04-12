@@ -2,8 +2,10 @@ import useSWR from "swr";
 import { fetchIdeas, createIdea, deleteIdea, updateIdea, starIdea as apiStarIdea } from "@/lib/api";
 import type { Idea } from "@/lib/types";
 
-export function useIdeas() {
-  const { data, error, isLoading, mutate } = useSWR("ideas", () => fetchIdeas());
+export function useIdeas(fallbackData?: { ideas: Idea[]; total: number }) {
+  const { data, error, isLoading, mutate } = useSWR("ideas", () => fetchIdeas(), {
+    fallbackData,
+  });
 
   const ideas = data?.ideas ?? [];
 
@@ -16,6 +18,8 @@ export function useIdeas() {
       media_type: "text",
       has_media: false,
       starred: false,
+      owner_username: "",
+      is_shared: false,
       category: null,
       media: [],
     };

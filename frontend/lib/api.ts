@@ -97,3 +97,33 @@ export async function deleteCategory(id: number) {
   const res = await fetch(`${API_BASE}/categories/${id}`, { method: "DELETE" });
   return handleResponse<{ message: string }>(res);
 }
+
+export async function fetchFeed() {
+  const res = await fetch(`${API_BASE}/feed`);
+  return handleResponse<{ posts: import("./types").FeedPost[] }>(res);
+}
+
+export async function shareIdea(ideaId: number) {
+  const res = await fetch(`${API_BASE}/feed/share/${ideaId}`, { method: "POST" });
+  return handleResponse<{ id: number }>(res);
+}
+
+export async function unshareIdea(ideaId: number) {
+  const res = await fetch(`${API_BASE}/feed/share/${ideaId}`, { method: "DELETE" });
+  return handleResponse<{ message: string }>(res);
+}
+
+export async function fetchProfile() {
+  const res = await fetch(`${API_BASE}/profile`);
+  return handleResponse<{ username: string; avatar_url: string | null }>(res);
+}
+
+export async function uploadAvatar(file: File) {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  const res = await fetch(`${API_BASE}/profile/avatar`, {
+    method: "POST",
+    body: formData,
+  });
+  return handleResponse<{ avatar_url: string }>(res);
+}

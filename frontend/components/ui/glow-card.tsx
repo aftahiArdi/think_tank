@@ -46,17 +46,16 @@ export function GlowCard({ children, className = "", style, onClick }: GlowCardP
         cursor: onClick ? "pointer" : undefined,
       }}
     >
-      {/* Soft inner light following cursor */}
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          pointerEvents: "none",
-          opacity: hovered ? 1 : 0,
-          transition: "opacity 0.3s ease",
-          background: `radial-gradient(circle at ${pos.x}% ${pos.y}%, rgba(255,255,255,0.04) 0%, transparent 65%)`,
-        }}
-      />
+      {hovered && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            background: `radial-gradient(circle at ${pos.x}% ${pos.y}%, rgba(255,255,255,0.04) 0%, transparent 65%)`,
+          }}
+        />
+      )}
       <div style={{ position: "relative" }}>
         {children}
       </div>
