@@ -64,26 +64,12 @@ export function CaptureSheet({
     return () => { document.body.style.overflow = ""; };
   }, [open]);
 
-  // Pre-request mic permission when sheet opens + release when it closes
+  // Release mic stream when sheet closes (stream is kept alive between recordings)
   useEffect(() => {
-    if (!open) {
-      // Release stream on close
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
-      return;
+    if (!open && streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
-    // Acquire stream up-front so the permission prompt appears once at sheet-open,
-    // not mid-flow when tapping the mic button. Subsequent recordings reuse this stream.
-    let cancelled = false;
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then((stream) => {
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-      })
-      .catch(() => {/* permission denied – mic button will surface the error on tap */});
-    return () => { cancelled = true; };
   }, [open]);
 
   // Stop active recording (without releasing stream) when sheet closes

@@ -13,6 +13,7 @@ export function GlowCard({ children, className = "", style, onClick }: GlowCardP
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: 50, y: 50 });
   const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {
     if (!ref.current) return;
@@ -30,18 +31,29 @@ export function GlowCard({ children, className = "", style, onClick }: GlowCardP
       onClick={onClick}
       onMouseMove={onMouseMove}
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseLeave={() => { setHovered(false); setPressed(false); }}
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      onTouchStart={() => setPressed(true)}
+      onTouchEnd={() => setPressed(false)}
+      onTouchCancel={() => setPressed(false)}
       style={{
         ...style,
         position: "relative",
         borderRadius: 12,
         border: "1px solid var(--border)",
         backgroundColor: "var(--card)",
-        transform: hovered ? "translateY(-2px)" : "translateY(0)",
-        boxShadow: hovered
+        transform: pressed
+          ? "scale(0.97)"
+          : hovered
+          ? "translateY(-2px)"
+          : "translateY(0)",
+        boxShadow: hovered && !pressed
           ? "0 8px 30px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08)"
           : "none",
-        transition: "transform 0.2s ease, box-shadow 0.2s ease",
+        transition: pressed
+          ? "transform 0.08s ease"
+          : "transform 0.2s ease, box-shadow 0.2s ease",
         overflow: "hidden",
         cursor: onClick ? "pointer" : undefined,
       }}

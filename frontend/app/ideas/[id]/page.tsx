@@ -11,6 +11,7 @@ import { mutate as globalMutate } from "swr";
 import { formatDate, formatTime } from "@/lib/utils/dates";
 import type { Idea } from "@/lib/types";
 import { VoiceMemoPlayer } from "@/components/ui/voice-memo-player";
+import { YouTubePreview } from "@/components/ui/youtube-preview";
 import { toast } from "sonner";
 
 function copyText(text: string) {
@@ -241,6 +242,9 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
               </button>
             </div>
           )}
+
+          {/* YouTube link preview */}
+          {idea.content && <YouTubePreview content={idea.content} />}
 
           {/* Media */}
           {idea.media.length > 0 && (

@@ -246,15 +246,37 @@
   --radius: 0.625rem;
 }
 
+/* View Transitions — smooth slide between pages on iOS 18+ Safari, no-op elsewhere */
+@view-transition {
+  navigation: auto;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    /* Remove blue flash on tap (iOS Safari) */
+    -webkit-tap-highlight-color: transparent;
   }
   body {
     @apply bg-background text-foreground;
     font-family: system-ui, -apple-system, sans-serif;
+    /* Smoother font rendering on WebKit */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Prevent body from overscrolling past its edges */
+    overscroll-behavior: none;
   }
   html {
     @apply font-sans;
+  }
+  /* Eliminate 300ms double-tap zoom delay on tappable elements */
+  button,
+  a,
+  [role="button"],
+  input,
+  select,
+  textarea,
+  label {
+    touch-action: manipulation;
   }
 }

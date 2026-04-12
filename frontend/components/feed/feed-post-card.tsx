@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { X, Star } from "lucide-react";
 import { AvatarCircle } from "./avatar-circle";
+import { YouTubePreview } from "@/components/ui/youtube-preview";
 import type { FeedPost } from "@/lib/types";
 
 function timeAgo(ts: string): string {
@@ -104,6 +105,11 @@ export function FeedPostCard({ post, onUnshare, onStar, onUnstar }: FeedPostCard
           >
             {post.content}
           </p>
+        )}
+
+        {/* YouTube link preview */}
+        {post.content && (
+          <YouTubePreview content={post.content} stopPropagation />
         )}
 
         {/* Image thumbnails */}
