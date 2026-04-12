@@ -2,9 +2,12 @@ import sqlite3
 import json
 import os
 import re
+import threading
+import bcrypt as _bcrypt
 from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
 # --- Timezone Setup ---
 VANCOUVER_TZ = ZoneInfo("America/Vancouver")
 
@@ -89,7 +92,6 @@ def init_db():
     if "starred" not in ideas_cols:
         cursor.execute("ALTER TABLE ideas ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
     if "user_id" not in ideas_cols:
-        # DEFAULT 1 — existing rows belong to aardi (will be user id 1 after seed script)
         cursor.execute("ALTER TABLE ideas ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1")
 
     # Migrate categories table
@@ -116,9 +118,61 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 # --- Flask App ---
 init_db()
 app = Flask(__name__)
+
+# In-memory cache: username → user_id (populated on first request per username)
+_user_id_cache: dict = {}
+
+
+def get_user_id():
+    """Read username from X-Think-Tank-User header, return user_id or None."""
+    username = request.headers.get('X-Think-Tank-User', '').strip().lower()
+    if not username:
+        return None
+    if username in _user_id_cache:
+        return _user_id_cache[username]
+    conn = sqlite3.connect('notes.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+    row = cursor.fetchone()
+    conn.close()
+    user_id = row[0] if row else None
+    if user_id:
+        _user_id_cache[username] = user_id
+    return user_id
+
+
+# --- Auth ---
+
+@app.route('/auth/login', methods=['POST'])
+def login():
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip().lower()
+    password = (data.get('password') or '')
+
+    if not username or not password:
+        return jsonify({'error': 'Missing username or password'}), 400
+
+    conn = sqlite3.connect('notes.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, password_hash FROM users WHERE username = ?', (username,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({'error': 'Invalid credentials'}), 401
+
+    user_id, password_hash = row
+    if not _bcrypt.checkpw(password.encode(), password_hash.encode()):
+        return jsonify({'error': 'Invalid credentials'}), 401
+
+    return jsonify({'username': username, 'user_id': user_id}), 200
+
+
+# --- Legacy endpoints (iOS Shortcut / todo) ---
 
 @app.route('/add_note', methods=['POST'])
 def add_note():
@@ -135,9 +189,6 @@ def add_note():
     idea_id = cursor.lastrowid
     conn.commit()
     conn.close()
-
-    # Background: generate embedding + auto-categorize
-    threading.Thread(target=auto_categorize, args=(idea_id, content)).start()
 
     return jsonify({'message': 'Note added successfully.', 'id': idea_id}), 201
 
@@ -190,7 +241,6 @@ def list_todos():
             'days_old': days_old,
         })
 
-    # Sort: stalest first, then by size weight
     size_weight = {'project': 4, 'big': 3, 'small': 2, 'tiny': 1}
     todos.sort(key=lambda t: (t['days_old'], size_weight.get(t['size'], 2)), reverse=True)
 
@@ -246,7 +296,7 @@ def delete_todo():
     return jsonify({'message': 'Task deleted.'}), 200
 
 
-# --- New API Endpoints ---
+# --- Ideas API ---
 
 ALLOWED_MIME_PREFIXES = ('image/', 'video/')
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
@@ -263,6 +313,9 @@ def sanitize_filename(name):
 
 @app.route('/ideas', methods=['GET'])
 def list_ideas():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         conn = sqlite3.connect('notes.db')
         conn.row_factory = sqlite3.Row
@@ -273,12 +326,15 @@ def list_ideas():
                    c.name as category_name, c.color as category_color
             FROM ideas i
             LEFT JOIN categories c ON i.category_id = c.id
+            WHERE i.user_id = ?
             ORDER BY i.timestamp DESC
-        ''')
+        ''', (user_id,))
         ideas_rows = cursor.fetchall()
 
-        # Fetch all media in one query, group by idea_id
-        cursor.execute('SELECT id, idea_id, filename, original_name, media_type, file_size, created_at FROM idea_media')
+        cursor.execute(
+            'SELECT id, idea_id, filename, original_name, media_type, file_size FROM idea_media WHERE idea_id IN (SELECT id FROM ideas WHERE user_id = ?)',
+            (user_id,)
+        )
         media_by_idea = {}
         for m in cursor.fetchall():
             media_by_idea.setdefault(m['idea_id'], []).append({
@@ -307,7 +363,6 @@ def list_ideas():
                     'name': row['category_name'],
                     'color': row['category_color']
                 }
-
             ideas.append(idea)
 
         conn.close()
@@ -318,24 +373,24 @@ def list_ideas():
 
 @app.route('/ideas', methods=['POST'])
 def create_idea():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     content = data.get('content', '')
     category_id = data.get('category_id')
-
-    # Allow media-only ideas (content can be empty if media will be attached)
 
     try:
         conn = sqlite3.connect('notes.db')
         cursor = conn.cursor()
         vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            'INSERT INTO ideas (content, timestamp, category_id) VALUES (?, ?, ?)',
-            (content, vancouver_time, category_id)
+            'INSERT INTO ideas (content, timestamp, category_id, user_id) VALUES (?, ?, ?, ?)',
+            (content, vancouver_time, category_id, user_id)
         )
         idea_id = cursor.lastrowid
         conn.commit()
         conn.close()
-
         return jsonify({'id': idea_id, 'message': 'Idea saved.'}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -343,6 +398,9 @@ def create_idea():
 
 @app.route('/ideas/<int:idea_id>', methods=['GET'])
 def get_idea(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         conn = sqlite3.connect('notes.db')
         conn.row_factory = sqlite3.Row
@@ -353,8 +411,8 @@ def get_idea(idea_id):
                    c.name as category_name, c.color as category_color
             FROM ideas i
             LEFT JOIN categories c ON i.category_id = c.id
-            WHERE i.id = ?
-        ''', (idea_id,))
+            WHERE i.id = ? AND i.user_id = ?
+        ''', (idea_id, user_id))
         row = cursor.fetchone()
 
         if not row:
@@ -362,7 +420,7 @@ def get_idea(idea_id):
             return jsonify({'error': 'Idea not found.'}), 404
 
         cursor.execute(
-            'SELECT id, filename, original_name, media_type, file_size, created_at FROM idea_media WHERE idea_id = ?',
+            'SELECT id, filename, original_name, media_type, file_size FROM idea_media WHERE idea_id = ?',
             (idea_id,)
         )
         media = [{
@@ -374,8 +432,7 @@ def get_idea(idea_id):
         } for m in cursor.fetchall()]
 
         conn.close()
-
-        idea = {
+        return jsonify({
             'id': row['id'],
             'content': row['content'],
             'timestamp': row['timestamp'],
@@ -384,14 +441,16 @@ def get_idea(idea_id):
             'starred': bool(row['starred']),
             'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
             'media': media,
-        }
-        return jsonify(idea), 200
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
 @app.route('/ideas/<int:idea_id>', methods=['PATCH'])
 def update_idea(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     try:
         conn = sqlite3.connect('notes.db')
@@ -410,8 +469,8 @@ def update_idea(idea_id):
             conn.close()
             return jsonify({'error': 'No fields to update.'}), 400
 
-        values.append(idea_id)
-        cursor.execute(f"UPDATE ideas SET {', '.join(updates)} WHERE id = ?", values)
+        values.extend([idea_id, user_id])
+        cursor.execute(f"UPDATE ideas SET {', '.join(updates)} WHERE id = ? AND user_id = ?", values)
 
         if cursor.rowcount == 0:
             conn.close()
@@ -426,26 +485,26 @@ def update_idea(idea_id):
 
 @app.route('/ideas/<int:idea_id>', methods=['DELETE'])
 def delete_idea(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         conn = sqlite3.connect('notes.db')
         cursor = conn.cursor()
 
-        # Check idea exists first
-        cursor.execute('SELECT id FROM ideas WHERE id = ?', (idea_id,))
+        cursor.execute('SELECT id FROM ideas WHERE id = ? AND user_id = ?', (idea_id, user_id))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'error': 'Idea not found.'}), 404
 
-        # Get media files to delete from disk
         cursor.execute('SELECT filename FROM idea_media WHERE idea_id = ?', (idea_id,))
         media_files = [row[0] for row in cursor.fetchall()]
 
         cursor.execute('DELETE FROM idea_media WHERE idea_id = ?', (idea_id,))
-        cursor.execute('DELETE FROM ideas WHERE id = ?', (idea_id,))
+        cursor.execute('DELETE FROM ideas WHERE id = ? AND user_id = ?', (idea_id, user_id))
         conn.commit()
         conn.close()
 
-        # Delete files from disk
         for filename in media_files:
             filepath = os.path.join('uploads', filename)
             if os.path.exists(filepath):
@@ -458,13 +517,16 @@ def delete_idea(idea_id):
 
 @app.route('/ideas/<int:idea_id>/star', methods=['PATCH'])
 def star_idea(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     starred = bool(data.get('starred', False))
     try:
         conn = sqlite3.connect('notes.db')
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('UPDATE ideas SET starred = ? WHERE id = ?', (int(starred), idea_id))
+        cursor.execute('UPDATE ideas SET starred = ? WHERE id = ? AND user_id = ?', (int(starred), idea_id, user_id))
         if cursor.rowcount == 0:
             conn.close()
             return jsonify({'error': 'Idea not found.'}), 404
@@ -507,7 +569,6 @@ def star_idea(idea_id):
 
 @app.route('/search', methods=['POST'])
 def semantic_search():
-    # Semantic search disabled (ML model removed)
     return jsonify({'results': []}), 200
 
 
@@ -525,7 +586,6 @@ def upload_file():
     if not file.filename:
         return jsonify({'error': 'Empty filename.'}), 400
 
-    # Determine content type — fall back to guessing from filename
     import mimetypes
     content_type = file.content_type or ''
     if not content_type or content_type == 'application/octet-stream':
@@ -544,7 +604,6 @@ def upload_file():
         file.save(filepath)
         file_size = os.path.getsize(filepath)
 
-        # Determine media type — sketches are uploaded as sketch.png
         if file.filename == 'sketch.png':
             media_type = 'sketch'
         elif content_type.startswith('image/'):
@@ -562,7 +621,6 @@ def upload_file():
         )
         media_id = cursor.lastrowid
 
-        # Update idea's media_type and has_media
         cursor.execute('SELECT media_type FROM ideas WHERE id = ?', (idea_id,))
         row = cursor.fetchone()
         if row:
@@ -595,13 +653,21 @@ def serve_upload(filename):
     return send_from_directory('uploads', filename)
 
 
+# --- Categories API ---
+
 @app.route('/categories', methods=['GET'])
 def list_categories():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         conn = sqlite3.connect('notes.db')
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('SELECT id, name, color, sort_order FROM categories ORDER BY sort_order')
+        cursor.execute(
+            'SELECT id, name, color, sort_order FROM categories WHERE user_id = ? ORDER BY sort_order',
+            (user_id,)
+        )
         categories = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({'categories': categories}), 200
@@ -611,6 +677,9 @@ def list_categories():
 
 @app.route('/categories', methods=['POST'])
 def create_category():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     name = data.get('name', '').strip()
     color = data.get('color', '#71717a')
@@ -621,26 +690,26 @@ def create_category():
     try:
         conn = sqlite3.connect('notes.db')
         cursor = conn.cursor()
-        cursor.execute('SELECT MAX(sort_order) FROM categories')
+        cursor.execute('SELECT MAX(sort_order) FROM categories WHERE user_id = ?', (user_id,))
         max_order = cursor.fetchone()[0] or 0
 
         cursor.execute(
-            'INSERT INTO categories (name, color, sort_order) VALUES (?, ?, ?)',
-            (name, color, max_order + 1)
+            'INSERT INTO categories (name, color, sort_order, user_id) VALUES (?, ?, ?, ?)',
+            (name, color, max_order + 1, user_id)
         )
         cat_id = cursor.lastrowid
         conn.commit()
         conn.close()
-
         return jsonify({'id': cat_id, 'message': 'Category created.'}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'Category name already exists.'}), 409
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
 @app.route('/categories/<int:cat_id>', methods=['PATCH'])
 def update_category(cat_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     try:
         conn = sqlite3.connect('notes.db')
@@ -659,8 +728,8 @@ def update_category(cat_id):
             conn.close()
             return jsonify({'error': 'No fields to update.'}), 400
 
-        values.append(cat_id)
-        cursor.execute(f"UPDATE categories SET {', '.join(updates)} WHERE id = ?", values)
+        values.extend([cat_id, user_id])
+        cursor.execute(f"UPDATE categories SET {', '.join(updates)} WHERE id = ? AND user_id = ?", values)
 
         if cursor.rowcount == 0:
             conn.close()
@@ -675,22 +744,24 @@ def update_category(cat_id):
 
 @app.route('/categories/<int:cat_id>', methods=['DELETE'])
 def delete_category(cat_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         conn = sqlite3.connect('notes.db')
         cursor = conn.cursor()
 
-        # Reassign ideas to "Misc" category
-        cursor.execute("SELECT id FROM categories WHERE name = 'Misc'")
+        cursor.execute("SELECT id FROM categories WHERE name = 'Misc' AND user_id = ?", (user_id,))
         misc_row = cursor.fetchone()
         misc_id = misc_row[0] if misc_row else None
 
         if misc_id:
             cursor.execute(
-                'UPDATE ideas SET category_id = ? WHERE category_id = ?',
-                (misc_id, cat_id)
+                'UPDATE ideas SET category_id = ? WHERE category_id = ? AND user_id = ?',
+                (misc_id, cat_id, user_id)
             )
 
-        cursor.execute('DELETE FROM categories WHERE id = ?', (cat_id,))
+        cursor.execute('DELETE FROM categories WHERE id = ? AND user_id = ?', (cat_id, user_id))
 
         if cursor.rowcount == 0:
             conn.close()
