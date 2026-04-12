@@ -6,7 +6,8 @@ import Link from "next/link";
 import { Star } from "lucide-react";
 import type { Idea } from "@/lib/types";
 import { GlowCard } from "@/components/ui/glow-card";
-import { YouTubePreview } from "@/components/ui/youtube-preview";
+import { YouTubePreview, extractYouTubeVideoId } from "@/components/ui/youtube-preview";
+import { LinkPreview } from "@/components/ui/link-preview";
 import { formatTime } from "@/lib/utils/dates";
 
 interface IdeaCardProps {
@@ -76,9 +77,11 @@ export const IdeaCard = memo(function IdeaCard({ idea, onClick, onStar }: IdeaCa
         </p>
       )}
 
-      {/* YouTube link preview */}
+      {/* Link preview — YouTube gets its own component, everything else uses microlink */}
       {idea.content && (
-        <YouTubePreview content={idea.content} stopPropagation />
+        extractYouTubeVideoId(idea.content)
+          ? <YouTubePreview content={idea.content} stopPropagation />
+          : <LinkPreview content={idea.content} stopPropagation />
       )}
 
       {idea.has_media && idea.media.length > 0 && (

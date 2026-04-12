@@ -8,7 +8,8 @@ import { ArrowLeft, Star } from "lucide-react";
 import { fetchFeedIdea, starFeedPost, unstarFeedPost } from "@/lib/api";
 import { formatDate, formatTime } from "@/lib/utils/dates";
 import { VoiceMemoPlayer } from "@/components/ui/voice-memo-player";
-import { YouTubePreview } from "@/components/ui/youtube-preview";
+import { YouTubePreview, extractYouTubeVideoId } from "@/components/ui/youtube-preview";
+import { LinkPreview } from "@/components/ui/link-preview";
 import { AvatarCircle } from "@/components/feed/avatar-circle";
 import { Calendar, Clock } from "lucide-react";
 import { toast } from "sonner";
@@ -129,8 +130,12 @@ export default function FeedIdeaPage({ params }: { params: Promise<{ ideaId: str
             </div>
           )}
 
-          {/* YouTube link preview */}
-          {idea.content && <YouTubePreview content={idea.content} />}
+          {/* Link preview */}
+          {idea.content && (
+            extractYouTubeVideoId(idea.content)
+              ? <YouTubePreview content={idea.content} />
+              : <LinkPreview content={idea.content} />
+          )}
 
           {/* Media */}
           {idea.media.length > 0 && (
