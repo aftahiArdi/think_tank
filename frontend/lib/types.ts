@@ -37,6 +37,7 @@ export interface FeedPost {
   content: string;
   media: IdeaMedia[];
   is_mine: boolean;
+  viewer_starred: boolean;
 }
 
 export interface SearchResult {

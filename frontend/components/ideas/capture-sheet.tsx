@@ -64,7 +64,29 @@ export function CaptureSheet({
     return () => { document.body.style.overflow = ""; };
   }, [open]);
 
-  // Cleanup on close
+  // Pre-request mic permission when sheet opens + release when it closes
+  useEffect(() => {
+    if (!open) {
+      // Release stream on close
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      return;
+    }
+    // Acquire stream up-front so the permission prompt appears once at sheet-open,
+    // not mid-flow when tapping the mic button. Subsequent recordings reuse this stream.
+    let cancelled = false;
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+      })
+      .catch(() => {/* permission denied – mic button will surface the error on tap */});
+    return () => { cancelled = true; };
+  }, [open]);
+
+  // Stop active recording (without releasing stream) when sheet closes
   useEffect(() => {
     if (!open) {
       stopRecording(false);
@@ -85,18 +107,20 @@ export function CaptureSheet({
         mediaRecorderRef.current.stop();
       }
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
+    // Do NOT stop stream tracks here — stream stays alive for next recording in this session.
+    // The pre-request useEffect above releases the stream when the sheet closes.
     setRecording(false);
     setRecordingSeconds(0);
   }, []);
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
+      // Reuse existing stream if still active; otherwise request fresh (e.g. first use or after denial)
+      let stream = streamRef.current;
+      if (!stream || stream.getTracks().some((t) => t.readyState === "ended")) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+      }
 
       // Pick best supported format
       const mimeType = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg"]
@@ -122,8 +146,7 @@ export function CaptureSheet({
           setAudioPreview({ file, url, duration: audio.duration });
         });
 
-        streamRef.current?.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
+        // Stream stays alive — no getTracks().stop() here
         setRecording(false);
         setRecordingSeconds(0);
       };

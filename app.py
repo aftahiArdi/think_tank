@@ -88,6 +88,17 @@ def init_db():
         )
     ''')
 
+    # feed_stars table: users saving/starring posts from others' feed
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS feed_stars (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+            starred_at DATETIME NOT NULL,
+            UNIQUE(user_id, idea_id)
+        )
+    ''')
+
     # Migrate ideas table: add columns if missing
     cursor.execute("PRAGMA table_info(ideas)")
     ideas_cols = [col[1] for col in cursor.fetchall()]
@@ -703,12 +714,14 @@ def get_feed():
             SELECT sf.id, sf.idea_id, sf.user_id, sf.shared_at,
                    i.content,
                    u.username as author_username,
-                   u.avatar_filename
+                   u.avatar_filename,
+                   CASE WHEN fs.id IS NOT NULL THEN 1 ELSE 0 END as viewer_starred
             FROM shared_feed sf
             JOIN ideas i ON i.id = sf.idea_id
             JOIN users u ON u.id = sf.user_id
+            LEFT JOIN feed_stars fs ON fs.idea_id = sf.idea_id AND fs.user_id = ?
             ORDER BY sf.shared_at DESC
-        ''')
+        ''', (user_id,))
         rows = cursor.fetchall()
 
         idea_ids = [r['idea_id'] for r in rows]
@@ -743,6 +756,7 @@ def get_feed():
                 'content': row['content'],
                 'media': media_by_idea.get(row['idea_id'], []),
                 'is_mine': row['user_id'] == user_id,
+                'viewer_starred': bool(row['viewer_starred']),
             })
 
         conn.close()
@@ -799,6 +813,116 @@ def unshare_idea(idea_id):
         conn.commit()
         conn.close()
         return jsonify({'message': 'Unshared'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/feed/star/<int:idea_id>', methods=['POST'])
+def star_feed_post(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+        # Must be a shared idea
+        cursor.execute('SELECT id FROM shared_feed WHERE idea_id = ?', (idea_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Post not found in feed'}), 404
+        vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            cursor.execute(
+                'INSERT INTO feed_stars (user_id, idea_id, starred_at) VALUES (?, ?, ?)',
+                (user_id, idea_id, vancouver_time)
+            )
+        except sqlite3.IntegrityError:
+            pass  # Already starred — idempotent
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Starred'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/feed/star/<int:idea_id>', methods=['DELETE'])
+def unstar_feed_post(idea_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM feed_stars WHERE user_id = ? AND idea_id = ?',
+            (user_id, idea_id)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Unstarred'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/feed/starred', methods=['GET'])
+def get_starred_feed_posts():
+    """Returns feed posts starred by the current viewer."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT sf.id, sf.idea_id, sf.user_id, sf.shared_at,
+                   i.content,
+                   u.username as author_username,
+                   u.avatar_filename
+            FROM feed_stars fs
+            JOIN shared_feed sf ON sf.idea_id = fs.idea_id
+            JOIN ideas i ON i.id = sf.idea_id
+            JOIN users u ON u.id = sf.user_id
+            WHERE fs.user_id = ?
+            ORDER BY fs.starred_at DESC
+        ''', (user_id,))
+        rows = cursor.fetchall()
+
+        idea_ids = [r['idea_id'] for r in rows]
+        media_by_idea = {}
+        if idea_ids:
+            placeholders = ','.join('?' * len(idea_ids))
+            cursor.execute(
+                f'SELECT id, idea_id, filename, media_type, file_size FROM idea_media WHERE idea_id IN ({placeholders})',
+                idea_ids
+            )
+            for m in cursor.fetchall():
+                media_by_idea.setdefault(m['idea_id'], []).append({
+                    'id': m['id'],
+                    'media_type': m['media_type'],
+                    'file_size': m['file_size'],
+                    'url': f"/api/flask/uploads/{m['filename']}"
+                })
+
+        posts = []
+        for row in rows:
+            avatar_url = None
+            if row['avatar_filename']:
+                avatar_url = f"/api/flask/uploads/avatars/{row['avatar_filename']}"
+            posts.append({
+                'id': row['id'],
+                'idea_id': row['idea_id'],
+                'shared_at': row['shared_at'],
+                'author': {'username': row['author_username'], 'avatar_url': avatar_url},
+                'content': row['content'],
+                'media': media_by_idea.get(row['idea_id'], []),
+                'is_mine': row['user_id'] == user_id,
+                'viewer_starred': True,
+            })
+
+        conn.close()
+        return jsonify({'posts': posts}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

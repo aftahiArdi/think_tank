@@ -127,3 +127,18 @@ export async function uploadAvatar(file: File) {
   });
   return handleResponse<{ avatar_url: string }>(res);
 }
+
+export async function starFeedPost(ideaId: number) {
+  const res = await fetch(`${API_BASE}/feed/star/${ideaId}`, { method: "POST" });
+  return handleResponse<{ message: string }>(res);
+}
+
+export async function unstarFeedPost(ideaId: number) {
+  const res = await fetch(`${API_BASE}/feed/star/${ideaId}`, { method: "DELETE" });
+  return handleResponse<{ message: string }>(res);
+}
+
+export async function fetchStarredFeedPosts() {
+  const res = await fetch(`${API_BASE}/feed/starred`);
+  return handleResponse<{ posts: import("./types").FeedPost[] }>(res);
+}

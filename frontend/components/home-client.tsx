@@ -12,7 +12,9 @@ import { SearchResults } from "@/components/search/search-results";
 import { ThemeSelector } from "@/components/theme/theme-selector";
 import { StatsView } from "@/components/stats/stats-view";
 import { FeedView } from "@/components/feed/feed-view";
+import { FeedPostCard } from "@/components/feed/feed-post-card";
 import { AvatarCircle } from "@/components/feed/avatar-circle";
+import { useStarredFeedPosts } from "@/lib/hooks/use-feed";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { BiometricToggle } from "@/components/auth/biometric-toggle";
 import { useIdeas } from "@/lib/hooks/use-ideas";
@@ -34,6 +36,7 @@ export function HomeClient() {
 
   const { ideas, isLoading, mutate, addIdea, removeIdea, patchIdea, starIdea } = useIdeas();
   const search = useSearch(ideas);
+  const { posts: starredFeedPosts, unstarPost } = useStarredFeedPosts();
 
   const starredIdeas = ideas.filter(i => i.starred);
 
@@ -95,22 +98,43 @@ export function HomeClient() {
         {activeTab === "feed" && <FeedView />}
 
         {activeTab === "starred" && (
-          <div className="pt-2">
-            {starredIdeas.length === 0 ? (
+          <div className="pt-2 space-y-4">
+            {starredIdeas.length === 0 && starredFeedPosts.length === 0 ? (
               <div className="text-center py-20" style={{ color: "var(--muted-foreground)" }}>
                 <p className="text-sm">No starred ideas yet.</p>
-                <p className="text-xs mt-1">Tap the star on any idea to save it here.</p>
+                <p className="text-xs mt-1">Tap the star on any idea or feed post to save it here.</p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {starredIdeas.map(idea => (
-                  <IdeaCard
-                    key={idea.id}
-                    idea={idea}
-                    onStar={(starred) => starIdea(idea.id, starred)}
-                  />
-                ))}
-              </div>
+              <>
+                {starredIdeas.length > 0 && (
+                  <div className="space-y-2">
+                    {starredIdeas.map(idea => (
+                      <IdeaCard
+                        key={idea.id}
+                        idea={idea}
+                        onStar={(starred) => starIdea(idea.id, starred)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {starredFeedPosts.length > 0 && (
+                  <div className="space-y-3">
+                    {starredIdeas.length > 0 && (
+                      <p className="text-[11px] font-semibold uppercase tracking-wider px-1"
+                        style={{ color: "var(--muted-foreground)" }}>
+                        Saved from feed
+                      </p>
+                    )}
+                    {starredFeedPosts.map(post => (
+                      <FeedPostCard
+                        key={post.id}
+                        post={post}
+                        onUnstar={() => unstarPost(post.idea_id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
