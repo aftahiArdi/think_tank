@@ -29,7 +29,10 @@ async function verifyToken(token: string): Promise<string | null> {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-  return expected === sig ? username : null;
+  if (expected !== sig) return null;
+  // Reject old cookie format (timestamp-based — all digits)
+  if (/^\d+$/.test(username)) return null;
+  return username;
 }
 
 export async function proxy(request: NextRequest) {
