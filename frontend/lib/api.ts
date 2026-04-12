@@ -142,3 +142,8 @@ export async function fetchStarredFeedPosts() {
   const res = await fetch(`${API_BASE}/feed/starred`);
   return handleResponse<{ posts: import("./types").FeedPost[] }>(res);
 }
+
+export async function fetchFeedIdea(ideaId: number) {
+  const res = await fetch(`${API_BASE}/feed/ideas/${ideaId}`);
+  return handleResponse<import("./types").FeedIdeaDetail>(res);
+}

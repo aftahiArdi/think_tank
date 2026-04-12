@@ -141,6 +141,10 @@ def init_db():
     if "avatar_filename" not in user_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN avatar_filename TEXT")
 
+    # Enable WAL mode for better concurrent read performance (persists in the DB file)
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA wal_autocheckpoint=1000")
+
     # NOTE: Default category seeding removed — handled per-user by create_users.py
 
     conn.commit()
@@ -153,6 +157,17 @@ app = Flask(__name__)
 
 # In-memory cache: username → user_id (populated on first request per username)
 _user_id_cache: dict = {}
+
+
+def get_conn():
+    """Return a SQLite connection with performance-optimised settings."""
+    conn = sqlite3.connect('notes.db')
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=-16000")   # 16MB page cache per connection
+    conn.execute("PRAGMA temp_store=MEMORY")   # temp tables in RAM
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
 def get_user_id():
@@ -813,6 +828,71 @@ def unshare_idea(idea_id):
         conn.commit()
         conn.close()
         return jsonify({'message': 'Unshared'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/feed/ideas/<int:idea_id>', methods=['GET'])
+def get_feed_idea(idea_id):
+    """Return any shared idea — accessible to all logged-in users, not just the owner."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT sf.shared_at, sf.user_id as author_id,
+                   i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                   c.name as category_name, c.color as category_color,
+                   u.username as author_username,
+                   u.avatar_filename,
+                   CASE WHEN fs.id IS NOT NULL THEN 1 ELSE 0 END as viewer_starred
+            FROM shared_feed sf
+            JOIN ideas i ON i.id = sf.idea_id
+            JOIN users u ON u.id = sf.user_id
+            LEFT JOIN categories c ON i.category_id = c.id
+            LEFT JOIN feed_stars fs ON fs.idea_id = sf.idea_id AND fs.user_id = ?
+            WHERE sf.idea_id = ?
+        ''', (user_id, idea_id))
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Not found or not shared'}), 404
+
+        cursor.execute(
+            'SELECT id, filename, media_type, file_size FROM idea_media WHERE idea_id = ?',
+            (idea_id,)
+        )
+        media = [{
+            'id': m['id'],
+            'filename': m['filename'],
+            'media_type': m['media_type'],
+            'file_size': m['file_size'],
+            'url': f"/api/flask/uploads/{m['filename']}"
+        } for m in cursor.fetchall()]
+
+        avatar_url = None
+        if row['avatar_filename']:
+            avatar_url = f"/api/flask/uploads/avatars/{row['avatar_filename']}"
+
+        conn.close()
+        return jsonify({
+            'id': row['id'],
+            'content': row['content'],
+            'timestamp': row['timestamp'],
+            'media_type': row['media_type'] or 'text',
+            'has_media': bool(row['has_media']),
+            'shared_at': row['shared_at'],
+            'author': {'username': row['author_username'], 'avatar_url': avatar_url},
+            'is_mine': row['author_id'] == user_id,
+            'viewer_starred': bool(row['viewer_starred']),
+            'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
+            'media': media,
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

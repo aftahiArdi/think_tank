@@ -40,6 +40,20 @@ export interface FeedPost {
   viewer_starred: boolean;
 }
 
+export interface FeedIdeaDetail {
+  id: number;
+  content: string;
+  timestamp: string;
+  media_type: string;
+  has_media: boolean;
+  shared_at: string;
+  author: { username: string; avatar_url: string | null };
+  is_mine: boolean;
+  viewer_starred: boolean;
+  category: { id: number; name: string; color: string } | null;
+  media: IdeaMedia[];
+}
+
 export interface SearchResult {
   id: number;
   content: string;
