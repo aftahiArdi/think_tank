@@ -1,25 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import crypto from "crypto";
 
-const PASSWORD = process.env.THINK_TANK_PASSWORD || "changeme";
 const SECRET = process.env.COOKIE_SECRET || "default-secret-change-me";
+const API_URL = process.env.API_URL || "http://localhost:6000";
 
-function signToken(): string {
-  const payload = Date.now().toString();
-  const hmac = crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
-  return `${payload}.${hmac}`;
+async function signUsername(username: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(username));
+  const sigHex = Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `${username}.${sigHex}`;
 }
 
 export async function POST(request: NextRequest) {
-  const { password } = await request.json();
+  const body = await request.json();
+  const username = (body.username || "").trim().toLowerCase();
+  const password = body.password || "";
 
-  if (password !== PASSWORD) {
-    return NextResponse.json({ error: "Wrong password" }, { status: 401 });
+  if (!username || !password) {
+    return NextResponse.json({ error: "Missing username or password" }, { status: 400 });
   }
 
-  const token = signToken();
-  const response = NextResponse.json({ success: true });
+  const res = await fetch(`${API_URL}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+
+  if (!res.ok) {
+    return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+  }
+
+  const token = await signUsername(username);
 
   (await cookies()).set("think_tank_auth", token, {
     httpOnly: true,
@@ -29,5 +49,5 @@ export async function POST(request: NextRequest) {
     path: "/",
   });
 
-  return response;
+  return NextResponse.json({ success: true });
 }
