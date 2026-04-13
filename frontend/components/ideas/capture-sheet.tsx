@@ -46,13 +46,22 @@ export function CaptureSheet({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const uploadToastIdRef = useRef<string | number | undefined>(undefined);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioElemRef = useRef<HTMLAudioElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  const { upload, uploading } = useUpload();
+  const { upload, uploading, uploadProgress } = useUpload();
+
+  // Keep upload toast percentage in sync with XHR progress
+  useEffect(() => {
+    if (uploading && uploadToastIdRef.current !== undefined) {
+      const pct = Math.round(uploadProgress * 100);
+      toast.loading(`Uploading… ${pct}%`, { id: uploadToastIdRef.current });
+    }
+  }, [uploading, uploadProgress]);
 
   // Lock body scroll while sheet is open
   useEffect(() => {
@@ -212,9 +221,19 @@ export function CaptureSheet({
       if (capturedSketch) {
         uploadFiles.push(new File([capturedSketch], "sketch.png", { type: "image/png" }));
       }
+
+      const toastId = toast.loading("Uploading… 0%");
+      uploadToastIdRef.current = toastId;
       upload(ideaId, uploadFiles)
-        .then(() => globalMutate("ideas").catch(() => {}))
-        .catch((e) => toast.error(`Upload failed: ${e instanceof Error ? e.message : "unknown error"}`));
+        .then(() => {
+          uploadToastIdRef.current = undefined;
+          toast.success("Uploaded", { id: toastId });
+          globalMutate("ideas").catch(() => {});
+        })
+        .catch((e) => {
+          uploadToastIdRef.current = undefined;
+          toast.error(`Upload failed: ${e instanceof Error ? e.message : "unknown error"}`, { id: toastId });
+        });
     } catch (e) {
       toast.error(`Failed to save: ${e instanceof Error ? e.message : "unknown error"}`);
       setSaving(false);

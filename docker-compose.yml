@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: think_tank_api
-    command: gunicorn -b 0.0.0.0:6000 -w 1 --threads 8 --timeout 120 --preload app:app
+    command: gunicorn -b 0.0.0.0:6000 -w 1 --threads 8 --timeout 300 --preload app:app
     ports:
       - "6000:6000"
     volumes:

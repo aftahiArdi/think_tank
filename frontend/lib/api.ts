@@ -70,6 +70,47 @@ export async function uploadFile(ideaId: number, file: File) {
   return handleResponse<{ id: number; filename: string; url: string }>(res);
 }
 
+export function uploadFileWithProgress(
+  ideaId: number,
+  file: File,
+  onProgress: (fraction: number) => void
+): Promise<{ id: number; filename: string; url: string }> {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("idea_id", ideaId.toString());
+    formData.append("file", file, file.name);
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Invalid response"));
+        }
+      } else {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          reject(new Error(body.error || `Request failed: ${xhr.status}`));
+        } catch {
+          reject(new Error(`Request failed: ${xhr.status}`));
+        }
+      }
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Network error")));
+    xhr.addEventListener("abort", () => reject(new Error("Upload cancelled")));
+
+    xhr.open("POST", `${API_BASE}/upload`);
+    xhr.send(formData);
+  });
+}
+
 export async function fetchCategories() {
   const res = await fetch(`${API_BASE}/categories`);
   return handleResponse<{ categories: import("./types").Category[] }>(res);

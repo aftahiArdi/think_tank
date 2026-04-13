@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { uploadFile } from "@/lib/api";
+import { uploadFileWithProgress } from "@/lib/api";
 import imageCompression from "browser-image-compression";
 
 const COMPRESSION_OPTIONS = {
@@ -10,12 +10,16 @@ const COMPRESSION_OPTIONS = {
 
 export function useUpload() {
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0); // 0–1
 
   const upload = async (ideaId: number, files: File[]) => {
     setUploading(true);
+    setUploadProgress(0);
     try {
+      const progresses = new Array(files.length).fill(0);
+
       const results = await Promise.all(
-        files.map(async (file) => {
+        files.map(async (file, index) => {
           let processedFile = file;
 
           // Compress images client-side before upload (skip HEIC/HEIF — canvas can't decode them)
@@ -26,14 +30,19 @@ export function useUpload() {
             processedFile = new File([compressed], file.name, { type: compressed.type || file.type });
           }
 
-          return uploadFile(ideaId, processedFile);
+          return uploadFileWithProgress(ideaId, processedFile, (p) => {
+            progresses[index] = p;
+            setUploadProgress(progresses.reduce((a, b) => a + b, 0) / progresses.length);
+          });
         })
       );
+
+      setUploadProgress(1);
       return results;
     } finally {
       setUploading(false);
     }
   };
 
-  return { upload, uploading };
+  return { upload, uploading, uploadProgress };
 }

@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import http from "node:http";
+import { Readable } from "node:stream";
 
 const BINARY_CONTENT_TYPE = /^(image|video|audio)\//;
 
@@ -16,10 +17,16 @@ async function proxy(req: NextRequest) {
   const user = req.headers.get("x-think-tank-user");
   if (user) headers["x-think-tank-user"] = user;
 
-  const body =
-    req.method === "GET" || req.method === "HEAD"
-      ? null
-      : Buffer.from(await req.arrayBuffer());
+  const cl = req.headers.get("content-length");
+  if (cl) headers["content-length"] = cl;
+
+  // Forward range headers — required for video seeking (206 Partial Content)
+  const range = req.headers.get("range");
+  if (range) headers["range"] = range;
+  const ifRange = req.headers.get("if-range");
+  if (ifRange) headers["if-range"] = ifRange;
+
+  const hasBody = req.method !== "GET" && req.method !== "HEAD" && req.body !== null;
 
   const parsed = new URL(url);
 
@@ -41,6 +48,11 @@ async function proxy(req: NextRequest) {
         const contentType = (res.headers["content-type"] as string) || "";
 
         if (BINARY_CONTENT_TYPE.test(contentType)) {
+          // Long-lived cache: uploads are immutable (ideaId-prefixed filenames never reuse)
+          responseHeaders.set("cache-control", "public, max-age=31536000, immutable");
+          // Remove Next.js RSC vary headers — they fragment the browser media cache
+          responseHeaders.delete("vary");
+
           // Stream binary content (images, video) — no buffering
           const stream = new ReadableStream({
             start(controller) {
@@ -76,8 +88,12 @@ async function proxy(req: NextRequest) {
     );
 
     upstream.on("error", reject);
-    if (body) upstream.write(body);
-    upstream.end();
+    if (hasBody && req.body) {
+      // Stream request body directly — no in-memory buffering (required for large video uploads)
+      Readable.fromWeb(req.body as import("node:stream/web").ReadableStream<Uint8Array>).pipe(upstream);
+    } else {
+      upstream.end();
+    }
   });
 }
 

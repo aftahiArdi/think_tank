@@ -260,6 +260,8 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
                     key={m.id}
                     src={m.url}
                     controls
+                    playsInline
+                    preload="metadata"
                     className="w-full rounded-2xl"
                     style={{ backgroundColor: "var(--card)" }}
                   />
