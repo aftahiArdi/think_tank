@@ -1,12 +1,16 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import useSWR from "swr";
 import { Shuffle, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Idea } from "@/lib/types";
+import { fetchOnThisDay, fetchRandomIdea } from "@/lib/api";
 
+// Flashback fetches its content directly from the server so it reaches across the
+// user's entire history — not just whatever the paginated feed currently has loaded.
 interface FlashbackProps {
-  ideas: Idea[];
+  ideas?: Idea[]; // unused but kept for API compat with existing callers
 }
 
 function timeAgoLabel(dateStr: string): string {
@@ -21,47 +25,6 @@ function timeAgoLabel(dateStr: string): string {
   if (months < 12) return `${months} month${months !== 1 ? "s" : ""} ago`;
   const years = Math.floor(days / 365);
   return `${years} year${years !== 1 ? "s" : ""} ago`;
-}
-
-function getFlashbackIdeas(ideas: Idea[]): Idea[] {
-  const now = new Date();
-  const todayKey = now.toLocaleDateString("en-CA");
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-
-  // Collect one random idea from each past week (same day of week)
-  // e.g. if today is Sunday, find ideas from last Sunday, 2 Sundays ago, etc.
-  const weekMs = 7 * 24 * 60 * 60 * 1000;
-  const results: Idea[] = [];
-
-  for (let weeksAgo = 1; weeksAgo <= 52; weeksAgo++) {
-    const targetStart = todayStart - weeksAgo * weekMs;
-    const targetEnd = targetStart + 24 * 60 * 60 * 1000;
-
-    const matches = ideas.filter((idea) => {
-      const t = new Date(idea.timestamp.replace(" ", "T")).getTime();
-      return t >= targetStart && t < targetEnd;
-    });
-
-    if (matches.length > 0) {
-      // Pick a random one from that day
-      results.push(matches[Math.floor(Math.random() * matches.length)]);
-    }
-  }
-
-  // Also include exact month+day matches from older than a week
-  const month = now.getMonth();
-  const day = now.getDate();
-  for (const idea of ideas) {
-    const d = new Date(idea.timestamp.replace(" ", "T"));
-    const ideaDate = d.toLocaleDateString("en-CA");
-    if (d.getMonth() === month && d.getDate() === day && ideaDate !== todayKey) {
-      if (!results.find((r) => r.id === idea.id)) {
-        results.push(idea);
-      }
-    }
-  }
-
-  return results;
 }
 
 function IdeaPreview({ idea, label }: { idea: Idea; label: string }) {
@@ -94,30 +57,75 @@ function IdeaPreview({ idea, label }: { idea: Idea; label: string }) {
   );
 }
 
-export function Flashback({ ideas }: FlashbackProps) {
+const OTD_CACHE_KEY = "tt-flashback-otd-cache";
+
+function readOtdCache(): { ideas: Idea[] } | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = localStorage.getItem(OTD_CACHE_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as { ideas: Idea[]; day: string };
+    // Invalidate if the cache was written on a different local day — "On This Day"
+    // is date-dependent, so yesterday's entries are wrong today.
+    const today = new Date().toLocaleDateString("en-CA");
+    if (parsed.day !== today) return undefined;
+    return { ideas: parsed.ideas };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeOtdCache(data: { ideas: Idea[] }) {
+  if (typeof window === "undefined") return;
+  try {
+    const today = new Date().toLocaleDateString("en-CA");
+    localStorage.setItem(OTD_CACHE_KEY, JSON.stringify({ ideas: data.ideas, day: today }));
+  } catch {
+    // Quota exceeded — ignore, SWR still works.
+  }
+}
+
+export function Flashback(_props: FlashbackProps) {
+  // On This Day — cached in localStorage so cold start paints from disk instantly
+  // instead of waiting on the Flask round-trip through the Tailscale funnel.
+  const { data: onThisDay } = useSWR("flashback-otd", () => fetchOnThisDay(), {
+    fallbackData: readOtdCache(),
+    onSuccess: (d) => writeOtdCache(d),
+  });
+  const flashbackIdeas = onThisDay?.ideas ?? [];
+  const [flashbackIndex, setFlashbackIndex] = useState(0);
+  const currentFlashback = flashbackIdeas[flashbackIndex];
+  const hasFlashbacks = flashbackIdeas.length > 0;
+
+  // Random — plain fetch, not SWR. SWR's global dedupingInterval (10s) would
+  // silently swallow rapid "Another one" taps and return the cached idea.
   const [randomIdea, setRandomIdea] = useState<Idea | null>(null);
-  const [flashbackIndex, setOnThisDayIndex] = useState(0);
+  const [randomLoading, setRandomLoading] = useState(false);
+  const [revealed, setRevealed] = useState(false);
 
-  const flashbackIdeas = useMemo(() => getFlashbackIdeas(ideas), [ideas]);
+  const loadRandom = useCallback(async () => {
+    setRandomLoading(true);
+    try {
+      const res = await fetchRandomIdea(24);
+      setRandomIdea(res.idea ?? null);
+    } finally {
+      setRandomLoading(false);
+    }
+  }, []);
 
-  // Only consider ideas older than 24h for random
-  const olderIdeas = useMemo(() => {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    return ideas.filter(
-      (i) => new Date(i.timestamp.replace(" ", "T")).getTime() < cutoff
-    );
-  }, [ideas]);
+  useEffect(() => {
+    void loadRandom();
+  }, [loadRandom]);
 
   const shuffle = useCallback(() => {
-    if (olderIdeas.length === 0) return;
-    const idx = Math.floor(Math.random() * olderIdeas.length);
-    setRandomIdea(olderIdeas[idx]);
-  }, [olderIdeas]);
+    setRevealed(true);
+    void loadRandom();
+  }, [loadRandom]);
 
-  const hasFlashbacks = flashbackIdeas.length > 0;
-  const currentFlashback = flashbackIdeas[flashbackIndex];
-
-  if (olderIdeas.length < 5 && !hasFlashbacks) return null;
+  // Hide the whole block only when we have neither OTD nor any random idea available.
+  // (We can't know "random count" without extra queries — instead we show the card
+  // optimistically and let the server decide whether it has anything to return.)
+  if (!hasFlashbacks && !randomIdea && !randomLoading) return null;
 
   return (
     <div className="space-y-3 mb-4">
@@ -138,7 +146,7 @@ export function Flashback({ ideas }: FlashbackProps) {
             <div className="flex items-center justify-between mt-3 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
               <button
                 onClick={() =>
-                  setOnThisDayIndex((i) => (i - 1 + flashbackIdeas.length) % flashbackIdeas.length)
+                  setFlashbackIndex((i) => (i - 1 + flashbackIdeas.length) % flashbackIdeas.length)
                 }
                 className="w-7 h-7 rounded-lg flex items-center justify-center"
                 style={{ backgroundColor: "var(--muted)" }}
@@ -150,7 +158,7 @@ export function Flashback({ ideas }: FlashbackProps) {
               </span>
               <button
                 onClick={() =>
-                  setOnThisDayIndex((i) => (i + 1) % flashbackIdeas.length)
+                  setFlashbackIndex((i) => (i + 1) % flashbackIdeas.length)
                 }
                 className="w-7 h-7 rounded-lg flex items-center justify-center"
                 style={{ backgroundColor: "var(--muted)" }}
@@ -162,8 +170,8 @@ export function Flashback({ ideas }: FlashbackProps) {
         </div>
       )}
 
-      {/* Random idea */}
-      {olderIdeas.length >= 5 && (
+      {/* Random idea — only shown if the server has at least one old idea */}
+      {(randomIdea || randomLoading) && (
         <div
           className="rounded-2xl px-4 py-3.5"
           style={{
@@ -171,7 +179,7 @@ export function Flashback({ ideas }: FlashbackProps) {
             border: "1px solid var(--border)",
           }}
         >
-          {randomIdea ? (
+          {revealed && randomIdea ? (
             <>
               <IdeaPreview
                 idea={randomIdea}

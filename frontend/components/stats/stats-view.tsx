@@ -1,10 +1,14 @@
 "use client";
 
 import { useMemo, useRef, useEffect } from "react";
+import useSWR from "swr";
 import type { Idea } from "@/lib/types";
+import { fetchStatsData } from "@/lib/api";
 
 interface StatsViewProps {
-  ideas: Idea[];
+  // Kept for API compatibility with existing callers. Stats now fetch their own
+  // dataset server-side so they cover every idea, not just the first paginated page.
+  ideas?: Idea[];
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -345,8 +349,12 @@ function SectionLabel({ children }: { children: string }) {
   );
 }
 
-export function StatsView({ ideas }: StatsViewProps) {
-  const stats = useMemo(() => computeStats(ideas), [ideas]);
+export function StatsView(_props: StatsViewProps) {
+  const { data, isLoading } = useSWR("stats-data", () => fetchStatsData(), {
+    revalidateOnFocus: false,
+  });
+  const allIdeas = data?.ideas ?? [];
+  const stats = useMemo(() => computeStats(allIdeas), [allIdeas]);
   const heatmapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -354,6 +362,14 @@ export function StatsView({ ideas }: StatsViewProps) {
       heatmapRef.current.scrollLeft = heatmapRef.current.scrollWidth;
     }
   }, [stats]);
+
+  if (isLoading && !stats) {
+    return (
+      <div className="pt-16 text-center" style={{ color: "var(--muted-foreground)" }}>
+        <p className="text-sm">Loading stats…</p>
+      </div>
+    );
+  }
 
   if (!stats) {
     return (

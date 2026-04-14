@@ -2,52 +2,29 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { isBiometricEnabled, verifyBiometric, setCurrentUsername, getCurrentUsername } from "@/lib/biometric";
+import { isBiometricEnabled, verifyBiometric } from "@/lib/biometric";
 import { Fingerprint } from "lucide-react";
 
 const SESSION_KEY = "tt-unlocked";
 
+function computeInitialState(pathname: string): "locked" | "unlocked" {
+  if (typeof window === "undefined") return "unlocked";
+  if (pathname === "/login") return "unlocked";
+  if (!isBiometricEnabled()) return "unlocked";
+  if (sessionStorage.getItem(SESSION_KEY) === "1") return "unlocked";
+  return "locked";
+}
+
 export function BiometricGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [state, setState] = useState<"checking" | "locked" | "unlocked">("checking");
+  // Synchronous initial decision — no network round-trip, no "checking" flash
+  const [state, setState] = useState<"locked" | "unlocked">(() => computeInitialState(pathname));
   const [error, setError] = useState("");
   const prompted = useRef(false);
 
   useEffect(() => {
-    // Skip biometric gate on login page — user needs to enter credentials
-    if (pathname === "/login") {
-      setState("unlocked");
-      return;
-    }
-    // Bootstrap username from server (handles existing sessions where localStorage is empty)
-    void bootstrapAndCheck();
+    if (state === "locked") doPrompt();
   }, []);
-
-  async function bootstrapAndCheck() {
-    // Fast path: username already known from cookie or localStorage — no network call
-    if (!getCurrentUsername()) {
-      // One-time fallback for existing sessions that predate the think_tank_user cookie
-      try {
-        const res = await fetch("/api/whoami");
-        if (res.ok) {
-          const { username } = await res.json();
-          setCurrentUsername(username);
-        }
-      } catch {
-        // ignore — proceed with whatever state we have
-      }
-    }
-    if (!isBiometricEnabled()) {
-      setState("unlocked");
-      return;
-    }
-    if (sessionStorage.getItem(SESSION_KEY) === "1") {
-      setState("unlocked");
-      return;
-    }
-    setState("locked");
-    doPrompt();
-  }
 
   async function doPrompt() {
     if (prompted.current) return;
@@ -65,10 +42,6 @@ export function BiometricGate({ children }: { children: React.ReactNode }) {
   }
 
   if (state === "unlocked") return <>{children}</>;
-
-  if (state === "checking") {
-    return <div className="min-h-screen" style={{ backgroundColor: "var(--background)" }} />;
-  }
 
   return (
     <div

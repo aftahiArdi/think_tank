@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 
 interface GlowCardProps {
   children: React.ReactNode;
@@ -10,6 +10,58 @@ interface GlowCardProps {
 }
 
 export function GlowCard({ children, className = "", style, onClick }: GlowCardProps) {
+  const [isFinePointer, setIsFinePointer] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(hover: hover) and (pointer: fine)");
+    setIsFinePointer(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsFinePointer(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  if (!isFinePointer) {
+    return (
+      <TouchGlowCard className={className} style={style} onClick={onClick}>
+        {children}
+      </TouchGlowCard>
+    );
+  }
+
+  return (
+    <DesktopGlowCard className={className} style={style} onClick={onClick}>
+      {children}
+    </DesktopGlowCard>
+  );
+}
+
+function TouchGlowCard({ children, className = "", style, onClick }: GlowCardProps) {
+  const [pressed, setPressed] = useState(false);
+  return (
+    <div
+      className={className}
+      onClick={onClick}
+      onTouchStart={() => setPressed(true)}
+      onTouchEnd={() => setPressed(false)}
+      onTouchCancel={() => setPressed(false)}
+      style={{
+        ...style,
+        position: "relative",
+        borderRadius: 12,
+        border: "1px solid var(--border)",
+        backgroundColor: "var(--card)",
+        transform: pressed ? "scale(0.97)" : "none",
+        transition: "transform 0.08s ease",
+        overflow: "hidden",
+        cursor: onClick ? "pointer" : undefined,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DesktopGlowCard({ children, className = "", style, onClick }: GlowCardProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x: 50, y: 50 });
   const [hovered, setHovered] = useState(false);
@@ -34,9 +86,6 @@ export function GlowCard({ children, className = "", style, onClick }: GlowCardP
       onMouseLeave={() => { setHovered(false); setPressed(false); }}
       onMouseDown={() => setPressed(true)}
       onMouseUp={() => setPressed(false)}
-      onTouchStart={() => setPressed(true)}
-      onTouchEnd={() => setPressed(false)}
-      onTouchCancel={() => setPressed(false)}
       style={{
         ...style,
         position: "relative",

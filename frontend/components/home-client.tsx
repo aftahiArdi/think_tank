@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import useSWR from "swr";
+import { fetchStarredIdeas } from "@/lib/api";
 import { Header } from "@/components/layout/header";
 import { BottomNav, type TabName } from "@/components/layout/bottom-nav";
 import { IdeaFeed } from "@/components/ideas/idea-feed";
@@ -34,11 +36,30 @@ export function HomeClient() {
 
   const username = getCurrentUsername() ?? "";
 
-  const { ideas, isLoading, mutate, addIdea, removeIdea, patchIdea, starIdea } = useIdeas();
+  const { ideas, isLoading, mutate, addIdea, removeIdea, patchIdea, starIdea, loadMore, hasMore } = useIdeas();
   const search = useSearch(ideas);
   const { posts: starredFeedPosts, unstarPost } = useStarredFeedPosts();
 
-  const starredIdeas = ideas.filter(i => i.starred);
+  // Starred ideas come from their own endpoint so the tab covers the user's full
+  // history, not just the currently-paginated feed. Only fetched when the starred
+  // tab is opened to keep cold-start cost off the main feed.
+  const { data: starredResp, mutate: mutateStarred } = useSWR(
+    activeTab === "starred" ? "starred-ideas" : null,
+    () => fetchStarredIdeas(),
+  );
+  const starredIdeas = starredResp?.ideas ?? ideas.filter(i => i.starred);
+
+  const handleStarFromStarredTab = async (id: number, starred: boolean) => {
+    // Optimistically drop the idea from the starred list on unstar, then fall
+    // through to the shared starIdea which updates the main feed cache.
+    if (!starred) {
+      void mutateStarred(
+        (current) => ({ ideas: (current?.ideas ?? []).filter(i => i.id !== id) }),
+        { revalidate: false },
+      );
+    }
+    await starIdea(id, starred);
+  };
 
   // Fetch profile when settings opens
   useEffect(() => {
@@ -74,6 +95,8 @@ export function HomeClient() {
             isLoading={isLoading}
             onRefresh={() => mutate()}
             onStar={starIdea}
+            onLoadMore={loadMore}
+            hasMore={hasMore}
           />
         )}
 
@@ -112,7 +135,7 @@ export function HomeClient() {
                       <IdeaCard
                         key={idea.id}
                         idea={idea}
-                        onStar={(starred) => starIdea(idea.id, starred)}
+                        onStar={(starred) => handleStarFromStarredTab(idea.id, starred)}
                       />
                     ))}
                   </div>

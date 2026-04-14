@@ -8,9 +8,12 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-export async function fetchIdeas() {
-  const res = await fetch(`${API_BASE}/ideas`);
-  return handleResponse<{ ideas: import("./types").Idea[]; total: number }>(res);
+export async function fetchIdeas(before?: string, limit: number = 50) {
+  const params = new URLSearchParams();
+  if (before) params.set("before", before);
+  params.set("limit", String(limit));
+  const res = await fetch(`${API_BASE}/ideas?${params.toString()}`);
+  return handleResponse<{ ideas: import("./types").Idea[]; next_before: string | null }>(res);
 }
 
 export async function createIdea(content: string, categoryId?: number) {
@@ -25,6 +28,26 @@ export async function createIdea(content: string, categoryId?: number) {
 export async function fetchIdea(id: number) {
   const res = await fetch(`${API_BASE}/ideas/${id}`);
   return handleResponse<import("./types").Idea>(res);
+}
+
+export async function fetchRandomIdea(excludeHours: number = 24) {
+  const res = await fetch(`${API_BASE}/ideas/random?exclude_hours=${excludeHours}`);
+  return handleResponse<{ idea: import("./types").Idea | null }>(res);
+}
+
+export async function fetchOnThisDay() {
+  const res = await fetch(`${API_BASE}/ideas/on-this-day`);
+  return handleResponse<{ ideas: import("./types").Idea[] }>(res);
+}
+
+export async function fetchStarredIdeas() {
+  const res = await fetch(`${API_BASE}/ideas/starred`);
+  return handleResponse<{ ideas: import("./types").Idea[] }>(res);
+}
+
+export async function fetchStatsData() {
+  const res = await fetch(`${API_BASE}/ideas/stats-data`);
+  return handleResponse<{ ideas: import("./types").Idea[] }>(res);
 }
 
 export async function updateIdea(id: number, data: { content?: string; category_id?: number }) {

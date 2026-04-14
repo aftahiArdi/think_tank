@@ -3,6 +3,7 @@
 import { memo, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { mutate as globalMutate } from "swr";
 import { Star, Play } from "lucide-react";
 import type { Idea } from "@/lib/types";
 import { GlowCard } from "@/components/ui/glow-card";
@@ -167,9 +168,20 @@ export const IdeaCard = memo(function IdeaCard({ idea, onClick, onStar }: IdeaCa
     return <GlowCard onClick={onClick}>{cardBody}</GlowCard>;
   }
 
+  // Seed the detail page's SWR cache with this idea so navigation hydrates instantly — no fetch.
+  const primeCache = () => {
+    globalMutate(`idea-${idea.id}`, idea, false);
+  };
+
   // Default: wrap in Link so Next.js prefetches the route chunk when card enters viewport
   return (
-    <Link href={`/ideas/${idea.id}`} prefetch style={{ display: "block", textDecoration: "none" }}>
+    <Link
+      href={`/ideas/${idea.id}`}
+      prefetch
+      onPointerDown={primeCache}
+      onTouchStart={primeCache}
+      style={{ display: "block", textDecoration: "none" }}
+    >
       <GlowCard>{cardBody}</GlowCard>
     </Link>
   );

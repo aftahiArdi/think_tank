@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useRef, useCallback } from "react";
+import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { RefreshCw } from "lucide-react";
 import type { Idea } from "@/lib/types";
 import { IdeaCard } from "./idea-card";
@@ -16,6 +16,8 @@ interface IdeaFeedProps {
   isLoading: boolean;
   onRefresh?: () => Promise<unknown>;
   onStar?: (id: number, starred: boolean) => void;
+  onLoadMore?: () => Promise<unknown> | void;
+  hasMore?: boolean;
 }
 
 const MEDIA_FILTERS: { key: MediaFilter; label: string; icon: string }[] = [
@@ -28,14 +30,22 @@ const MEDIA_FILTERS: { key: MediaFilter; label: string; icon: string }[] = [
 ];
 
 const PULL_THRESHOLD = 80;
+const INITIAL_VISIBLE = 30;
+const PAGE_SIZE = 30;
 
 function getTodayKey() {
   return new Date().toLocaleDateString("en-CA");
 }
 
-export function IdeaFeed({ ideas, isLoading, onRefresh, onStar }: IdeaFeedProps) {
+export function IdeaFeed({ ideas, isLoading, onRefresh, onStar, onLoadMore, hasMore: serverHasMore }: IdeaFeedProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("today");
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
+
+  // Progressive rendering — cap how many cards are in the DOM at once.
+  // Without this, users with long histories mount 800+ cards on every feed load,
+  // which destroys iPhone Safari first-paint time and scroll performance.
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   // Pull-to-refresh state
   const [pullY, setPullY] = useState(0);
@@ -93,10 +103,47 @@ export function IdeaFeed({ ideas, isLoading, onRefresh, onStar }: IdeaFeedProps)
     return base;
   }, [ideas, viewMode, mediaFilter, todayKey]);
 
+  // Reset visible window whenever the filter set changes so the user lands at the top
+  // with a fresh page — otherwise they'd get a stale count against a different list.
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE);
+  }, [viewMode, mediaFilter]);
+
+  const visibleIdeas = useMemo(
+    () => filteredIdeas.slice(0, visibleCount),
+    [filteredIdeas, visibleCount]
+  );
+  // hasMore is true if either: (a) we have in-memory ideas not yet rendered to the DOM, or
+  // (b) the server has older pages we haven't fetched yet.
+  const hasMoreInMemory = filteredIdeas.length > visibleIdeas.length;
+  const hasMore = hasMoreInMemory || !!serverHasMore;
+
+  // IntersectionObserver sentinel — either bumps the in-DOM window, or fetches the next
+  // server page once the window has caught up. rootMargin "600px" starts loading before
+  // the sentinel is actually visible so the user never sees a gap.
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        if (hasMoreInMemory) {
+          setVisibleCount((c) => c + PAGE_SIZE);
+        } else if (onLoadMore) {
+          void onLoadMore();
+        }
+      },
+      { rootMargin: "600px 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, hasMoreInMemory, visibleIdeas.length, onLoadMore]);
+
   const grouped = useMemo(() => {
     const groups: { date: string; label: string; ideas: Idea[] }[] = [];
     let currentDate = "";
-    for (const idea of filteredIdeas) {
+    for (const idea of visibleIdeas) {
       const dateKey = idea.timestamp.split(" ")[0];
       if (dateKey !== currentDate) {
         currentDate = dateKey;
@@ -105,7 +152,7 @@ export function IdeaFeed({ ideas, isLoading, onRefresh, onStar }: IdeaFeedProps)
       groups[groups.length - 1].ideas.push(idea);
     }
     return groups;
-  }, [filteredIdeas]);
+  }, [visibleIdeas]);
 
   const todayCount = useMemo(
     () => ideas.filter((i) => i.timestamp.startsWith(todayKey)).length,
@@ -242,6 +289,15 @@ export function IdeaFeed({ ideas, isLoading, onRefresh, onStar }: IdeaFeedProps)
               </div>
             </div>
           ))}
+          {hasMore && (
+            <div
+              ref={sentinelRef}
+              className="py-6 text-center text-xs"
+              style={{ color: "var(--muted-foreground)" }}
+            >
+              Loading more…
+            </div>
+          )}
         </div>
       )}
 

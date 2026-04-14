@@ -2,9 +2,9 @@
 
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check, Star, Share2 } from "lucide-react";
-import { fetchIdeas, fetchIdea, deleteIdea, starIdea, shareIdea, unshareIdea } from "@/lib/api";
+import { fetchIdea, deleteIdea, starIdea, shareIdea, unshareIdea } from "@/lib/api";
 import { ShareConfirmSheet } from "@/components/feed/share-confirm-sheet";
 import { getCurrentUsername } from "@/lib/biometric";
 import { mutate as globalMutate } from "swr";
@@ -69,15 +69,20 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
   const [isSharedOverride, setIsSharedOverride] = useState<boolean | null>(null);
   const currentUsername = getCurrentUsername();
 
-  const { data: feedData } = useSWR("ideas", () => fetchIdeas());
-  const cached = feedData?.ideas.find(i => i.id === ideaId);
+  // Read the feed cache NON-reactively as a hint — no subscription, no refetch of the full list.
+  const { cache } = useSWRConfig();
+  const feedHint = (cache.get("ideas")?.data as { ideas: Idea[] } | undefined)
+    ?.ideas.find(i => i.id === ideaId);
 
+  // Single-idea SWR — the card's onPointerDown seeds this cache, so in the happy path
+  // `data` is already populated on first render and there's no network wait.
   const { data: fetched, isLoading } = useSWR(
-    cached ? null : `idea-${ideaId}`,
-    () => fetchIdea(ideaId)
+    `idea-${ideaId}`,
+    () => fetchIdea(ideaId),
+    { fallbackData: feedHint }
   );
 
-  const idea: Idea | undefined = cached ?? fetched;
+  const idea: Idea | undefined = fetched;
 
   // Derive isShared: use optimistic override when set, else fall back to idea data (no extra render needed)
   const isShared = isSharedOverride ?? idea?.is_shared ?? null;

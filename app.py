@@ -145,6 +145,12 @@ def init_db():
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA wal_autocheckpoint=1000")
 
+    # Hot-path index for the paginated feed query (WHERE user_id = ? ORDER BY timestamp DESC).
+    # Keeps cursor-paginated reads O(log n) regardless of history size.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ideas_user_timestamp ON ideas(user_id, timestamp DESC)"
+    )
+
     # NOTE: Default category seeding removed — handled per-user by create_users.py
 
     conn.commit()
@@ -360,37 +366,67 @@ def list_ideas():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
+        # Cursor pagination: `before` is the timestamp of the last idea from the prior page.
+        # Response payload stays constant-size regardless of total history length.
+        before = request.args.get('before')
+        try:
+            limit = int(request.args.get('limit', 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, 200))
+
         conn = sqlite3.connect('notes.db')
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        cursor.execute('''
-            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
-                   c.name as category_name, c.color as category_color,
-                   u.username as owner_username,
-                   CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
-            FROM ideas i
-            LEFT JOIN categories c ON i.category_id = c.id
-            LEFT JOIN users u ON i.user_id = u.id
-            LEFT JOIN shared_feed sf ON sf.idea_id = i.id
-            WHERE i.user_id = ?
-            ORDER BY i.timestamp DESC
-        ''', (user_id,))
+        if before:
+            cursor.execute('''
+                SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                       c.name as category_name, c.color as category_color,
+                       u.username as owner_username,
+                       CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
+                FROM ideas i
+                LEFT JOIN categories c ON i.category_id = c.id
+                LEFT JOIN users u ON i.user_id = u.id
+                LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+                WHERE i.user_id = ? AND i.timestamp < ?
+                ORDER BY i.timestamp DESC
+                LIMIT ?
+            ''', (user_id, before, limit))
+        else:
+            cursor.execute('''
+                SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                       c.name as category_name, c.color as category_color,
+                       u.username as owner_username,
+                       CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
+                FROM ideas i
+                LEFT JOIN categories c ON i.category_id = c.id
+                LEFT JOIN users u ON i.user_id = u.id
+                LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+                WHERE i.user_id = ?
+                ORDER BY i.timestamp DESC
+                LIMIT ?
+            ''', (user_id, limit))
         ideas_rows = cursor.fetchall()
 
-        cursor.execute(
-            'SELECT id, idea_id, filename, original_name, media_type, file_size FROM idea_media WHERE idea_id IN (SELECT id FROM ideas WHERE user_id = ?)',
-            (user_id,)
-        )
+        # Only fetch media for the ideas we're actually returning — avoids scanning
+        # the full media table on every page.
+        idea_ids = [row['id'] for row in ideas_rows]
         media_by_idea = {}
-        for m in cursor.fetchall():
-            media_by_idea.setdefault(m['idea_id'], []).append({
-                'id': m['id'],
-                'filename': m['filename'],
-                'media_type': m['media_type'],
-                'file_size': m['file_size'],
-                'url': f"/api/flask/uploads/{m['filename']}"
-            })
+        if idea_ids:
+            placeholders = ','.join('?' * len(idea_ids))
+            cursor.execute(
+                f'SELECT id, idea_id, filename, original_name, media_type, file_size FROM idea_media WHERE idea_id IN ({placeholders})',
+                idea_ids
+            )
+            for m in cursor.fetchall():
+                media_by_idea.setdefault(m['idea_id'], []).append({
+                    'id': m['id'],
+                    'filename': m['filename'],
+                    'media_type': m['media_type'],
+                    'file_size': m['file_size'],
+                    'url': f"/api/flask/uploads/{m['filename']}"
+                })
 
         ideas = []
         for row in ideas_rows:
@@ -414,8 +450,294 @@ def list_ideas():
                 }
             ideas.append(idea)
 
+        # next_before cursor = timestamp of the last row returned, or null if this is the tail.
+        next_before = ideas[-1]['timestamp'] if len(ideas) == limit else None
+
         conn.close()
-        return jsonify({'ideas': ideas, 'total': len(ideas)}), 200
+        return jsonify({'ideas': ideas, 'next_before': next_before}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/random', methods=['GET'])
+def random_idea():
+    """One random idea older than exclude_hours (default 24). Picked server-side so
+    Flashback draws from the user's ENTIRE history, not just whatever the paginated
+    feed happens to have loaded."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        try:
+            exclude_hours = int(request.args.get('exclude_hours', 24))
+        except (TypeError, ValueError):
+            exclude_hours = 24
+
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
+                   u.username as owner_username,
+                   CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
+            FROM ideas i
+            LEFT JOIN users u ON i.user_id = u.id
+            LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+            WHERE i.user_id = ?
+              AND i.timestamp < datetime('now', ?)
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (user_id, f'-{exclude_hours} hours'),
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'idea': None}), 200
+
+        cursor.execute(
+            'SELECT id, filename, media_type, file_size FROM idea_media WHERE idea_id = ?',
+            (row['id'],),
+        )
+        media = [
+            {
+                'id': m['id'],
+                'filename': m['filename'],
+                'media_type': m['media_type'],
+                'file_size': m['file_size'],
+                'url': f"/api/flask/uploads/{m['filename']}",
+            }
+            for m in cursor.fetchall()
+        ]
+        conn.close()
+        return jsonify({
+            'idea': {
+                'id': row['id'],
+                'content': row['content'],
+                'timestamp': row['timestamp'],
+                'media_type': row['media_type'] or 'text',
+                'has_media': bool(row['has_media']),
+                'starred': bool(row['starred']),
+                'owner_username': row['owner_username'],
+                'is_shared': bool(row['is_shared']),
+                'category': None,
+                'media': media,
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/on-this-day', methods=['GET'])
+def on_this_day():
+    """Flashback ideas: exact month+day matches from prior years, plus one random
+    idea from each prior week-ago bucket (same day-of-week, up to 52 weeks back).
+    Server-side so Flashback reaches across the user's entire history regardless
+    of pagination."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # 1) Exact month+day matches from prior years
+        cursor.execute(
+            """
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
+                   u.username as owner_username,
+                   CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
+            FROM ideas i
+            LEFT JOIN users u ON i.user_id = u.id
+            LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+            WHERE i.user_id = ?
+              AND strftime('%m-%d', i.timestamp) = strftime('%m-%d', 'now', 'localtime')
+              AND date(i.timestamp) != date('now', 'localtime')
+            ORDER BY i.timestamp DESC
+            LIMIT 20
+            """,
+            (user_id,),
+        )
+        rows = list(cursor.fetchall())
+        seen_ids = {r['id'] for r in rows}
+
+        # 2) One random idea per prior week bucket (1..52 weeks ago) —
+        #    matches the old client-side getFlashbackIdeas behavior.
+        cursor.execute(
+            """
+            WITH ranked AS (
+                SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
+                       u.username as owner_username,
+                       CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared,
+                       CAST((julianday(date('now', 'localtime'))
+                             - julianday(date(i.timestamp, 'localtime'))) / 7 AS INTEGER) AS weeks_ago,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY CAST((julianday(date('now', 'localtime'))
+                                              - julianday(date(i.timestamp, 'localtime'))) / 7 AS INTEGER)
+                           ORDER BY RANDOM()
+                       ) AS rn
+                FROM ideas i
+                LEFT JOIN users u ON i.user_id = u.id
+                LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+                WHERE i.user_id = ?
+                  AND date(i.timestamp, 'localtime') < date('now', 'localtime', '-6 days')
+            )
+            SELECT * FROM ranked
+            WHERE rn = 1 AND weeks_ago BETWEEN 1 AND 52
+            ORDER BY weeks_ago ASC
+            """,
+            (user_id,),
+        )
+        for r in cursor.fetchall():
+            if r['id'] in seen_ids:
+                continue
+            seen_ids.add(r['id'])
+            rows.append(r)
+
+        ids = [r['id'] for r in rows]
+        media_by_idea: dict[int, list] = {}
+        if ids:
+            placeholders = ','.join('?' * len(ids))
+            cursor.execute(
+                f'SELECT id, idea_id, filename, media_type, file_size FROM idea_media WHERE idea_id IN ({placeholders})',
+                ids,
+            )
+            for m in cursor.fetchall():
+                media_by_idea.setdefault(m['idea_id'], []).append({
+                    'id': m['id'],
+                    'filename': m['filename'],
+                    'media_type': m['media_type'],
+                    'file_size': m['file_size'],
+                    'url': f"/api/flask/uploads/{m['filename']}",
+                })
+
+        ideas = [
+            {
+                'id': r['id'],
+                'content': r['content'],
+                'timestamp': r['timestamp'],
+                'media_type': r['media_type'] or 'text',
+                'has_media': bool(r['has_media']),
+                'starred': bool(r['starred']),
+                'owner_username': r['owner_username'],
+                'is_shared': bool(r['is_shared']),
+                'category': None,
+                'media': media_by_idea.get(r['id'], []),
+            }
+            for r in rows
+        ]
+        conn.close()
+        return jsonify({'ideas': ideas}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/starred', methods=['GET'])
+def starred_ideas():
+    """Every starred idea for the user, regardless of pagination. Starred lists
+    are typically small (<100) so we return the full set in one response."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                   c.name as category_name, c.color as category_color,
+                   u.username as owner_username,
+                   CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
+            FROM ideas i
+            LEFT JOIN categories c ON i.category_id = c.id
+            LEFT JOIN users u ON i.user_id = u.id
+            LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+            WHERE i.user_id = ? AND i.starred = 1
+            ORDER BY i.timestamp DESC
+            """,
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+
+        ids = [r['id'] for r in rows]
+        media_by_idea: dict[int, list] = {}
+        if ids:
+            placeholders = ','.join('?' * len(ids))
+            cursor.execute(
+                f'SELECT id, idea_id, filename, media_type, file_size FROM idea_media WHERE idea_id IN ({placeholders})',
+                ids,
+            )
+            for m in cursor.fetchall():
+                media_by_idea.setdefault(m['idea_id'], []).append({
+                    'id': m['id'],
+                    'filename': m['filename'],
+                    'media_type': m['media_type'],
+                    'file_size': m['file_size'],
+                    'url': f"/api/flask/uploads/{m['filename']}",
+                })
+
+        ideas = []
+        for row in rows:
+            idea = {
+                'id': row['id'],
+                'content': row['content'],
+                'timestamp': row['timestamp'],
+                'media_type': row['media_type'] or 'text',
+                'has_media': bool(row['has_media']),
+                'starred': True,
+                'owner_username': row['owner_username'],
+                'is_shared': bool(row['is_shared']),
+                'category': None,
+                'media': media_by_idea.get(row['id'], []),
+            }
+            if row['category_id']:
+                idea['category'] = {
+                    'id': row['category_id'],
+                    'name': row['category_name'],
+                    'color': row['category_color'],
+                }
+            ideas.append(idea)
+
+        conn.close()
+        return jsonify({'ideas': ideas}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/ideas/stats-data', methods=['GET'])
+def stats_data():
+    """Lightweight rows for every idea the user owns — just what StatsView needs
+    to compute totals, streaks, heatmaps, and burst sessions. No media, no joins."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        conn = sqlite3.connect('notes.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, content, timestamp, media_type
+            FROM ideas
+            WHERE user_id = ?
+            ORDER BY timestamp DESC
+            """,
+            (user_id,),
+        )
+        ideas = [
+            {
+                'id': r['id'],
+                'content': r['content'] or '',
+                'timestamp': r['timestamp'],
+                'media_type': r['media_type'] or 'text',
+            }
+            for r in cursor.fetchall()
+        ]
+        conn.close()
+        return jsonify({'ideas': ideas}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
