@@ -1,6 +1,6 @@
 # Think Tank
 
-Personal idea capture PWA. Built for ADHD — minimum friction, speed above everything. Capture raw thoughts (text, images, sketches, video, voice) from an iPhone. Come back later to search, star, and share.
+Personal idea capture app with minimum friction, where speed is the priority. Capture raw thoughts (text, images, sketches, video, voice) from an iPhone. Come back later to search, star, and share.
 
 ## Architecture
 
