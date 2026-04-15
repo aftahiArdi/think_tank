@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR from "swr";
+import { useInView } from "@/lib/hooks/use-in-view";
 
 const URL_REGEX = /https?:\/\/[^\s<>"]+[^\s<>".,;:!?)]/g;
 
@@ -40,9 +41,13 @@ interface LinkPreviewProps {
 
 export function LinkPreview({ content, stopPropagation }: LinkPreviewProps) {
   const url = extractFirstNonYouTubeUrl(content);
+  // Only fire the microlink call once this card is near the viewport. Without
+  // this, a 30-card feed mount triggers up to 30 parallel external fetches
+  // before the user has even scrolled.
+  const { ref, inView } = useInView<HTMLAnchorElement>("300px 0px");
 
   const { data } = useSWR<MicrolicMeta>(
-    url ? `link-${url}` : null,
+    url && inView ? `link-${url}` : null,
     () => fetchMeta(url!),
     { revalidateOnFocus: false, dedupingInterval: 3_600_000 }
   );
@@ -55,6 +60,7 @@ export function LinkPreview({ content, stopPropagation }: LinkPreviewProps) {
 
   return (
     <a
+      ref={ref}
       href={url}
       target="_blank"
       rel="noopener noreferrer"

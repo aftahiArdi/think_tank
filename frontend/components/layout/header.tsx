@@ -1,13 +1,15 @@
 "use client";
 
-import { Settings } from "lucide-react";
+import { Settings, BarChart3 } from "lucide-react";
 import { CountUp } from "@/components/ui/count-up";
 
 export function Header({
   onSettingsClick,
+  onStatsClick,
   ideaCount = 0,
 }: {
   onSettingsClick: () => void;
+  onStatsClick?: () => void;
   ideaCount?: number;
 }) {
   return (
@@ -34,13 +36,26 @@ export function Header({
           </p>
         )}
       </div>
-      <button
-        onClick={onSettingsClick}
-        className="w-8 h-8 rounded-lg flex items-center justify-center"
-        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
-      >
-        <Settings size={16} style={{ color: "var(--muted-foreground)" }} />
-      </button>
+      <div className="flex items-center gap-2">
+        {onStatsClick && (
+          <button
+            onClick={onStatsClick}
+            aria-label="Stats"
+            className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+          >
+            <BarChart3 size={16} style={{ color: "var(--muted-foreground)" }} />
+          </button>
+        )}
+        <button
+          onClick={onSettingsClick}
+          aria-label="Settings"
+          className="w-8 h-8 rounded-lg flex items-center justify-center"
+          style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+        >
+          <Settings size={16} style={{ color: "var(--muted-foreground)" }} />
+        </button>
+      </div>
     </header>
   );
 }

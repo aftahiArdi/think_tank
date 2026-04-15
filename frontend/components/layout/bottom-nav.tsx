@@ -1,16 +1,16 @@
 "use client";
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { Lightbulb, Search, Bookmark, FolderOpen, Plus, Users } from "lucide-react";
+import { Lightbulb, Search, Bookmark, Sparkles, Plus, Users } from "lucide-react";
 
-export type TabName = "ideas" | "search" | "feed" | "starred" | "categories";
+export type TabName = "ideas" | "search" | "feed" | "starred" | "summaries";
 
 const tabs: { name: TabName; icon: typeof Lightbulb; label: string }[] = [
-  { name: "ideas",      icon: Lightbulb,  label: "Ideas"   },
-  { name: "search",     icon: Search,     label: "Search"  },
-  { name: "feed",       icon: Users,      label: "Feed"    },
-  { name: "starred",    icon: Bookmark,   label: "Starred" },
-  { name: "categories", icon: FolderOpen, label: "Stats"   },
+  { name: "ideas",     icon: Lightbulb, label: "Ideas"   },
+  { name: "search",    icon: Search,    label: "Search"  },
+  { name: "feed",      icon: Users,     label: "Feed"    },
+  { name: "starred",   icon: Bookmark,  label: "Starred" },
+  { name: "summaries", icon: Sparkles,  label: "Recap"   },
 ];
 
 interface BottomNavProps {

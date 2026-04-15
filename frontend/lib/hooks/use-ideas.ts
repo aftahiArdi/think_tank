@@ -107,33 +107,45 @@ export function useIdeas(fallbackData?: FeedResponse) {
       media: [],
     };
 
+    // Snapshot the pre-mutation list once — SWR passes the pre-optimistic cache
+    // to the async updater, so referencing `current?.ideas` there would drop the
+    // newly-added row. Build the final list ourselves from a stable snapshot.
+    const prevList = data?.ideas ?? page1;
+    const prevCursor = data?.next_before ?? null;
+
+    // No post-write refetch: we already know the new row, just swap the temp id
+    // for the server-assigned one. Saves a full feed GET round-trip per capture.
     mutate(
       async () => {
-        await createIdea(content, categoryId);
-        return fetchIdeas(undefined, PAGE_SIZE);
+        const created = await createIdea(content, categoryId);
+        return {
+          ideas: [{ ...optimistic, id: created.id }, ...prevList],
+          next_before: prevCursor,
+        };
       },
       {
-        optimisticData: (current) => ({
-          ideas: [optimistic, ...(current?.ideas ?? page1)],
-          next_before: current?.next_before ?? data?.next_before ?? null,
-        }),
+        optimisticData: { ideas: [optimistic, ...prevList], next_before: prevCursor },
         rollbackOnError: true,
+        revalidate: false,
       }
     );
   };
 
   const removeIdea = async (id: number) => {
+    const prevList = data?.ideas ?? page1;
+    const prevCursor = data?.next_before ?? null;
+    const nextList = prevList.filter((i) => i.id !== id);
+
+    // No post-write refetch: the local filter is already the correct state.
     mutate(
       async () => {
         await deleteIdea(id);
-        return fetchIdeas(undefined, PAGE_SIZE);
+        return { ideas: nextList, next_before: prevCursor };
       },
       {
-        optimisticData: (current) => ({
-          ideas: (current?.ideas ?? page1).filter((i) => i.id !== id),
-          next_before: current?.next_before ?? null,
-        }),
+        optimisticData: { ideas: nextList, next_before: prevCursor },
         rollbackOnError: true,
+        revalidate: false,
       }
     );
     // Also remove from the older-pages tail so it disappears from view immediately.

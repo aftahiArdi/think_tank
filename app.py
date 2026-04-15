@@ -1,12 +1,23 @@
 import sqlite3
 import json
 import os
+import random
 import re
 import threading
 import bcrypt as _bcrypt
 from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+# OpenAI client for Whisper transcription. Imported lazily at module load so a
+# missing API key doesn't crash the rest of the app — the /transcribe endpoint
+# checks `_openai_client` before use and returns a clear error if unconfigured.
+try:
+    from openai import OpenAI as _OpenAI  # type: ignore
+    _openai_key = os.environ.get("OPENAI_API_KEY")
+    _openai_client = _OpenAI(api_key=_openai_key) if _openai_key else None
+except Exception:
+    _openai_client = None
 
 # --- Timezone Setup ---
 VANCOUVER_TZ = ZoneInfo("America/Vancouver")
@@ -150,6 +161,28 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_ideas_user_timestamp ON ideas(user_id, timestamp DESC)"
     )
+    # Supporting indexes for feed JOINs — without these SQLite scans shared_feed/idea_media
+    # on every page load of list_ideas.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shared_feed_idea ON shared_feed(idea_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_idea_media_idea ON idea_media(idea_id)"
+    )
+
+    # Daily AI summaries — one row per (user, date). Cached forever so each day
+    # only ever costs one LLM call; regeneration is explicit via ?force=1.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS daily_summaries (
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            date TEXT NOT NULL,
+            content TEXT NOT NULL,
+            idea_count INTEGER NOT NULL,
+            model TEXT,
+            created_at DATETIME NOT NULL,
+            PRIMARY KEY (user_id, date)
+        )
+    ''')
 
     # NOTE: Default category seeding removed — handled per-user by create_users.py
 
@@ -183,7 +216,7 @@ def get_user_id():
         return None
     if username in _user_id_cache:
         return _user_id_cache[username]
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
     row = cursor.fetchone()
@@ -205,7 +238,7 @@ def login():
     if not username or not password:
         return jsonify({'error': 'Missing username or password'}), 400
 
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute('SELECT id, password_hash FROM users WHERE username = ?', (username,))
     row = cursor.fetchone()
@@ -231,7 +264,7 @@ def add_note():
     if not content:
         return jsonify({'error': 'Content is required.'}), 400
 
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
     vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute('INSERT INTO ideas (content, timestamp) VALUES (?, ?)', (content, vancouver_time))
@@ -254,7 +287,7 @@ def add_todo():
     if size not in ('tiny', 'small', 'big', 'project'):
         size = 'small'
 
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
     vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute(
@@ -269,7 +302,7 @@ def add_todo():
 
 @app.route('/list_todos', methods=['GET'])
 def list_todos():
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute('SELECT id, content, size, timestamp FROM todo')
     rows = cursor.fetchall()
@@ -304,7 +337,7 @@ def complete_todo():
     if not todo_id:
         return jsonify({'error': 'id is required.'}), 400
 
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
 
     cursor.execute('SELECT id, content, size, timestamp FROM todo WHERE id = ?', (todo_id,))
@@ -336,7 +369,7 @@ def delete_todo():
     if not todo_id:
         return jsonify({'error': 'id is required.'}), 400
 
-    conn = sqlite3.connect('notes.db')
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute('DELETE FROM todo WHERE id = ?', (todo_id,))
     conn.commit()
@@ -375,7 +408,7 @@ def list_ideas():
             limit = 50
         limit = max(1, min(limit, 200))
 
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -459,6 +492,74 @@ def list_ideas():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/ideas/by-date', methods=['GET'])
+def ideas_by_date():
+    """Return all ideas (with media) for a single Vancouver-date, used by the
+    Recap tab to expand a given day without pulling the whole feed."""
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+    date_str = request.args.get('date', '').strip()
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+        return jsonify({'error': 'Invalid date.'}), 400
+
+    conn = get_conn()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+               c.name as category_name, c.color as category_color,
+               u.username as owner_username,
+               CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
+        FROM ideas i
+        LEFT JOIN categories c ON i.category_id = c.id
+        LEFT JOIN users u ON i.user_id = u.id
+        LEFT JOIN shared_feed sf ON sf.idea_id = i.id
+        WHERE i.user_id = ? AND i.timestamp LIKE ?
+        ORDER BY i.timestamp ASC
+    ''', (user_id, f'{date_str}%'))
+    rows = cursor.fetchall()
+    idea_ids = [r['id'] for r in rows]
+    media_by_idea = {}
+    if idea_ids:
+        placeholders = ','.join('?' * len(idea_ids))
+        cursor.execute(
+            f'SELECT id, idea_id, filename, original_name, media_type, file_size FROM idea_media WHERE idea_id IN ({placeholders})',
+            idea_ids,
+        )
+        for m in cursor.fetchall():
+            media_by_idea.setdefault(m['idea_id'], []).append({
+                'id': m['id'],
+                'filename': m['filename'],
+                'media_type': m['media_type'],
+                'file_size': m['file_size'],
+                'url': f"/api/flask/uploads/{m['filename']}",
+            })
+    ideas = []
+    for row in rows:
+        idea = {
+            'id': row['id'],
+            'content': row['content'],
+            'timestamp': row['timestamp'],
+            'media_type': row['media_type'] or 'text',
+            'has_media': bool(row['has_media']),
+            'starred': bool(row['starred']),
+            'owner_username': row['owner_username'],
+            'is_shared': bool(row['is_shared']),
+            'category': None,
+            'media': media_by_idea.get(row['id'], []),
+        }
+        if row['category_id']:
+            idea['category'] = {
+                'id': row['category_id'],
+                'name': row['category_name'],
+                'color': row['category_color'],
+            }
+        ideas.append(idea)
+    conn.close()
+    return jsonify({'ideas': ideas}), 200
+
+
 @app.route('/ideas/random', methods=['GET'])
 def random_idea():
     """One random idea older than exclude_hours (default 24). Picked server-side so
@@ -473,9 +574,24 @@ def random_idea():
         except (TypeError, ValueError):
             exclude_hours = 24
 
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        # Avoid `ORDER BY RANDOM()` — it scans + sorts the whole table. Instead
+        # count the eligible rows and pick a random offset; with the index on
+        # (user_id, timestamp) this is effectively two indexed lookups.
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM ideas
+            WHERE user_id = ? AND timestamp < datetime('now', ?)
+            """,
+            (user_id, f'-{exclude_hours} hours'),
+        )
+        total = cursor.fetchone()[0]
+        if not total:
+            conn.close()
+            return jsonify({'idea': None}), 200
+        offset = random.randint(0, total - 1)
         cursor.execute(
             """
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
@@ -486,10 +602,10 @@ def random_idea():
             LEFT JOIN shared_feed sf ON sf.idea_id = i.id
             WHERE i.user_id = ?
               AND i.timestamp < datetime('now', ?)
-            ORDER BY RANDOM()
-            LIMIT 1
+            ORDER BY i.timestamp
+            LIMIT 1 OFFSET ?
             """,
-            (user_id, f'-{exclude_hours} hours'),
+            (user_id, f'-{exclude_hours} hours', offset),
         )
         row = cursor.fetchone()
         if not row:
@@ -539,7 +655,7 @@ def on_this_day():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -642,7 +758,7 @@ def starred_ideas():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -715,7 +831,7 @@ def stats_data():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -752,7 +868,7 @@ def create_idea():
     category_id = data.get('category_id')
 
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
         vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
@@ -773,7 +889,7 @@ def get_idea(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -830,7 +946,7 @@ def update_idea(idea_id):
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
 
         updates = []
@@ -866,7 +982,7 @@ def delete_idea(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
 
         cursor.execute('SELECT id FROM ideas WHERE id = ? AND user_id = ?', (idea_id, user_id))
@@ -900,7 +1016,7 @@ def star_idea(idea_id):
     data = request.get_json()
     starred = bool(data.get('starred', False))
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('UPDATE ideas SET starred = ? WHERE id = ? AND user_id = ?', (int(starred), idea_id, user_id))
@@ -993,7 +1109,7 @@ def upload_file():
         else:
             media_type = 'video'
 
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
         vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1030,6 +1146,229 @@ def upload_file():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/transcribe', methods=['POST'])
+def transcribe_audio():
+    if _openai_client is None:
+        return jsonify({'error': 'Transcription not configured.'}), 503
+
+    data = request.get_json(silent=True) or {}
+    idea_id = data.get('idea_id')
+    if not idea_id:
+        return jsonify({'error': 'idea_id is required.'}), 400
+
+    user_id = get_user_id()
+
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, content FROM ideas WHERE id = ?', (idea_id,))
+    row = cursor.fetchone()
+    if not row or row[0] != user_id:
+        conn.close()
+        return jsonify({'error': 'Idea not found.'}), 404
+    current_content = row[1] or ''
+
+    cursor.execute(
+        "SELECT filename FROM idea_media WHERE idea_id = ? AND media_type = 'audio' ORDER BY id DESC LIMIT 1",
+        (idea_id,),
+    )
+    mrow = cursor.fetchone()
+    if not mrow:
+        conn.close()
+        return jsonify({'error': 'No audio attached to this idea.'}), 404
+
+    filepath = os.path.join('uploads', mrow[0])
+    if not os.path.exists(filepath):
+        conn.close()
+        return jsonify({'error': 'Audio file missing on disk.'}), 404
+
+    try:
+        with open(filepath, 'rb') as f:
+            result = _openai_client.audio.transcriptions.create(
+                model='whisper-1',
+                file=f,
+            )
+        text = (getattr(result, 'text', '') or '').strip()
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': f'Transcription failed: {e}'}), 500
+
+    if not text:
+        conn.close()
+        return jsonify({'error': 'Empty transcription.'}), 500
+
+    if current_content.strip():
+        new_content = f"{current_content}\n\n{text}"
+    else:
+        new_content = text
+
+    cursor.execute('UPDATE ideas SET content = ? WHERE id = ?', (new_content, idea_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'id': idea_id, 'content': new_content, 'transcription': text}), 200
+
+
+def _ollama_chat(prompt: str, model: str) -> str:
+    """Call local Ollama /api/chat and return the assistant's text.
+    Raises RuntimeError on any transport/parse failure."""
+    import urllib.request
+    import urllib.error
+    url = os.environ.get('OLLAMA_URL', 'http://ollama:11434').rstrip('/') + '/api/chat'
+    payload = json.dumps({
+        'model': model,
+        'messages': [{'role': 'user', 'content': prompt}],
+        'stream': False,
+        # Keep model resident for 30 min after each call — avoids the cold-start
+        # penalty (model weights take ~15-30s to load into RAM on CPU) when the
+        # user hits the summary button twice in one session.
+        'keep_alive': '30m',
+        'options': {'temperature': 0.5, 'num_ctx': 4096},
+    }).encode('utf-8')
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=580) as resp:
+            body = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f'Ollama HTTP {e.code}: {e.read().decode("utf-8", "ignore")[:200]}')
+    except Exception as e:
+        raise RuntimeError(f'Ollama request failed: {e}')
+    msg = (body.get('message') or {}).get('content') or ''
+    return msg.strip()
+
+
+@app.route('/summary/daily', methods=['POST'])
+def daily_summary():
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({'error': 'Unauthorized.'}), 401
+
+    data = request.get_json(silent=True) or {}
+    force = bool(data.get('force'))
+    date_str = data.get('date') or datetime.now(VANCOUVER_TZ).strftime('%Y-%m-%d')
+
+    conn = get_conn()
+    cursor = conn.cursor()
+
+    if not force:
+        cursor.execute(
+            'SELECT content, idea_count, created_at FROM daily_summaries WHERE user_id = ? AND date = ?',
+            (user_id, date_str),
+        )
+        cached = cursor.fetchone()
+        if cached:
+            conn.close()
+            return jsonify({
+                'date': date_str,
+                'summary': cached['content'],
+                'idea_count': cached['idea_count'],
+                'created_at': cached['created_at'],
+                'cached': True,
+            }), 200
+
+    cursor.execute(
+        "SELECT content, timestamp FROM ideas WHERE user_id = ? AND timestamp LIKE ? ORDER BY timestamp ASC",
+        (user_id, f'{date_str}%'),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        conn.close()
+        return jsonify({'error': 'No ideas for this date.'}), 404
+
+    lines = []
+    for r in rows:
+        text = (r['content'] or '').strip()
+        if not text:
+            continue
+        time_part = (r['timestamp'] or '').split(' ')[1][:5] if ' ' in (r['timestamp'] or '') else ''
+        lines.append(f"- [{time_part}] {text}")
+    ideas_blob = '\n'.join(lines)
+
+    prompt = (
+        "You are summarizing one person's stream-of-consciousness ideas from a single day. "
+        "Write a warm, concise summary (4-7 sentences) that surfaces the main themes, any "
+        "recurring threads, notable emotional tone, and anything that looks like a decision or "
+        "an action item. Use second person ('you'). Do not list every idea — synthesize. "
+        "Do not add a heading.\n\n"
+        f"Date: {date_str}\nIdeas:\n{ideas_blob}"
+    )
+
+    model = os.environ.get('OLLAMA_MODEL', 'llama3.2:3b')
+    try:
+        summary = _ollama_chat(prompt, model)
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': f'Summary failed: {e}'}), 500
+
+    if not summary:
+        conn.close()
+        return jsonify({'error': 'Empty summary.'}), 500
+
+    created_at = datetime.now(VANCOUVER_TZ).strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute(
+        'INSERT OR REPLACE INTO daily_summaries (user_id, date, content, idea_count, model, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        (user_id, date_str, summary, len(rows), model, created_at),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'date': date_str,
+        'summary': summary,
+        'idea_count': len(rows),
+        'created_at': created_at,
+        'cached': False,
+    }), 200
+
+
+@app.route('/summary/daily/all', methods=['GET'])
+def daily_summary_all():
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({'error': 'Unauthorized.'}), 401
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT date, content, idea_count, created_at FROM daily_summaries WHERE user_id = ? ORDER BY date DESC',
+        (user_id,),
+    )
+    rows = [
+        {
+            'date': r['date'],
+            'summary': r['content'],
+            'idea_count': r['idea_count'],
+            'created_at': r['created_at'],
+        }
+        for r in cursor.fetchall()
+    ]
+    conn.close()
+    return jsonify({'summaries': rows}), 200
+
+
+@app.route('/summary/daily', methods=['GET'])
+def daily_summary_get():
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({'error': 'Unauthorized.'}), 401
+    date_str = request.args.get('date') or datetime.now(VANCOUVER_TZ).strftime('%Y-%m-%d')
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT content, idea_count, created_at FROM daily_summaries WHERE user_id = ? AND date = ?',
+        (user_id, date_str),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'date': date_str, 'summary': None}), 200
+    return jsonify({
+        'date': date_str,
+        'summary': row['content'],
+        'idea_count': row['idea_count'],
+        'created_at': row['created_at'],
+        'cached': True,
+    }), 200
+
+
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
     return send_from_directory('uploads', filename)
@@ -1043,7 +1382,7 @@ def get_feed():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1108,7 +1447,7 @@ def share_idea(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
 
         cursor.execute('SELECT id FROM ideas WHERE id = ? AND user_id = ?', (idea_id, user_id))
@@ -1140,7 +1479,7 @@ def unshare_idea(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
 
         cursor.execute(
@@ -1161,7 +1500,7 @@ def get_feed_idea(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1225,7 +1564,7 @@ def star_feed_post(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
         # Must be a shared idea
         cursor.execute('SELECT id FROM shared_feed WHERE idea_id = ?', (idea_id,))
@@ -1253,7 +1592,7 @@ def unstar_feed_post(idea_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
         cursor.execute(
             'DELETE FROM feed_stars WHERE user_id = ? AND idea_id = ?',
@@ -1273,7 +1612,7 @@ def get_starred_feed_posts():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1337,7 +1676,7 @@ def get_profile():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT username, avatar_filename FROM users WHERE id = ?', (user_id,))
@@ -1380,7 +1719,7 @@ def upload_avatar():
 
     try:
         file.save(filepath)
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
         cursor.execute('UPDATE users SET avatar_filename = ? WHERE id = ?', (filename, user_id))
         conn.commit()
@@ -1400,7 +1739,7 @@ def list_categories():
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -1427,7 +1766,7 @@ def create_category():
         return jsonify({'error': 'Name is required.'}), 400
 
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
         cursor.execute('SELECT MAX(sort_order) FROM categories WHERE user_id = ?', (user_id,))
         max_order = cursor.fetchone()[0] or 0
@@ -1451,7 +1790,7 @@ def update_category(cat_id):
         return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
 
         updates = []
@@ -1487,7 +1826,7 @@ def delete_category(cat_id):
     if user_id is None:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
-        conn = sqlite3.connect('notes.db')
+        conn = get_conn()
         cursor = conn.cursor()
 
         cursor.execute("SELECT id FROM categories WHERE name = 'Misc' AND user_id = ?", (user_id,))

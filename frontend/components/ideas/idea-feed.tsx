@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState, useRef, useCallback, useEffect } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { RefreshCw } from "lucide-react";
 import type { Idea } from "@/lib/types";
 import { IdeaCard } from "./idea-card";
 import { Flashback } from "./flashback";
 import { formatDate } from "@/lib/utils/dates";
 import { Skeleton } from "@/components/ui/skeleton";
+import { haptics } from "@/lib/haptics";
 
 type ViewMode = "today" | "all";
 type MediaFilter = "all" | "text" | "image" | "sketch" | "video" | "audio";
@@ -29,7 +30,11 @@ const MEDIA_FILTERS: { key: MediaFilter; label: string; icon: string }[] = [
   { key: "audio",  label: "Voice",  icon: "🎙️" },
 ];
 
-const PULL_THRESHOLD = 80;
+// Threshold lowered from 80 → 55: less wrist travel to trigger a refresh,
+// matches the "flick" feel of native iOS Mail / Twitter PTR better.
+const PULL_THRESHOLD = 55;
+// Release easing — slight overshoot bounce when the indicator snaps back home.
+const RELEASE_EASE = "cubic-bezier(0.34, 1.56, 0.64, 1)";
 const INITIAL_VISIBLE = 30;
 const PAGE_SIZE = 30;
 
@@ -47,49 +52,125 @@ export function IdeaFeed({ ideas, isLoading, onRefresh, onStar, onLoadMore, hasM
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  // Pull-to-refresh state
-  const [pullY, setPullY] = useState(0);
+  // Pull-to-refresh: native non-passive listener + direct DOM writes.
+  //
+  // React 19's synthetic touch events attach as passive listeners, so
+  // `e.preventDefault()` is silently ignored — meaning iOS rubber-bands the
+  // whole page and our custom pull fights the native scroll. The fix is to
+  // attach the touchmove listener ourselves with `{ passive: false }`, then
+  // drive the spacer height via `.style.height` on refs instead of setState.
+  // Zero re-renders during the drag.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const indicatorRef = useRef<HTMLDivElement | null>(null);
+  const iconRef = useRef<SVGSVGElement | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const touchStartY = useRef(0);
-  const pulling = useRef(false);
+  const refreshingRef = useRef(false);
 
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    if (refreshing) return;
-    // Only activate when scrolled to the top
-    const scrollTop = window.scrollY || document.documentElement.scrollTop;
-    if (scrollTop > 5) return;
-    touchStartY.current = e.touches[0].clientY;
-    pulling.current = true;
-  }, [refreshing]);
+  const onRefreshRef = useRef(onRefresh);
+  useEffect(() => { onRefreshRef.current = onRefresh; }, [onRefresh]);
 
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!pulling.current || refreshing) return;
-    const dy = e.touches[0].clientY - touchStartY.current;
-    if (dy < 0) {
-      setPullY(0);
-      return;
-    }
-    // Rubber-band effect: diminishing returns past threshold
-    const dampened = dy < PULL_THRESHOLD ? dy : PULL_THRESHOLD + (dy - PULL_THRESHOLD) * 0.3;
-    setPullY(dampened);
-  }, [refreshing]);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
 
-  const onTouchEnd = useCallback(async () => {
-    if (!pulling.current) return;
-    pulling.current = false;
-    if (pullY >= PULL_THRESHOLD && onRefresh) {
-      setRefreshing(true);
-      setPullY(PULL_THRESHOLD);
-      try {
-        await onRefresh();
-      } finally {
-        setRefreshing(false);
-        setPullY(0);
+    let startY = 0;
+    let lastDampened = 0;
+    let pulling = false;
+    let crossed = false;
+
+    const writeIndicator = (y: number) => {
+      const indicator = indicatorRef.current;
+      const icon = iconRef.current;
+      // progress hits 1.0 exactly at the trigger threshold.
+      const progress = Math.min(y / PULL_THRESHOLD, 1);
+      // Snap the icon slightly larger once the user crosses the trigger — it's
+      // the visual counterpart to the haptic tap: "let go now and it refreshes".
+      const armed = progress >= 1;
+      const scale = armed ? 1.15 : 0.6 + progress * 0.55;
+      // Rotate up to ~200° by threshold (feels lively without spinning twice)
+      // and then hold steady so the armed state is obviously settled.
+      const rot = armed ? 200 : progress * 200;
+      if (indicator) {
+        indicator.style.height = `${y}px`;
+        indicator.style.transition = pulling
+          ? "none"
+          : `height 0.42s ${RELEASE_EASE}`;
       }
-    } else {
-      setPullY(0);
-    }
-  }, [pullY, onRefresh]);
+      if (icon) {
+        icon.style.opacity = String(Math.min(progress * 1.2, 1));
+        icon.style.transform = `rotate(${rot}deg) scale(${scale})`;
+        icon.style.transition = pulling
+          ? "transform 0.12s ease-out"
+          : `transform 0.42s ${RELEASE_EASE}, opacity 0.2s ease`;
+      }
+    };
+
+    const onStart = (e: TouchEvent) => {
+      if (refreshingRef.current) return;
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      if (scrollTop > 5) return;
+      startY = e.touches[0].clientY;
+      pulling = true;
+      crossed = false;
+      lastDampened = 0;
+    };
+
+    const onMove = (e: TouchEvent) => {
+      if (!pulling || refreshingRef.current) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy <= 0) {
+        // User is scrolling up — abandon the pull and let native handle it.
+        pulling = false;
+        writeIndicator(0);
+        return;
+      }
+      // We own this gesture: block the native rubber-band so the page doesn't
+      // drift while we animate the indicator.
+      if (e.cancelable) e.preventDefault();
+      const dampened = dy < PULL_THRESHOLD ? dy : PULL_THRESHOLD + (dy - PULL_THRESHOLD) * 0.3;
+      lastDampened = dampened;
+      if (!crossed && dampened >= PULL_THRESHOLD) {
+        crossed = true;
+        haptics.tap();
+      } else if (crossed && dampened < PULL_THRESHOLD) {
+        crossed = false;
+      }
+      writeIndicator(dampened);
+    };
+
+    const onEnd = async () => {
+      if (!pulling) return;
+      pulling = false;
+      const shouldRefresh = lastDampened >= PULL_THRESHOLD;
+      crossed = false;
+      if (shouldRefresh && onRefreshRef.current) {
+        refreshingRef.current = true;
+        setRefreshing(true);
+        writeIndicator(PULL_THRESHOLD);
+        try {
+          await onRefreshRef.current();
+        } finally {
+          refreshingRef.current = false;
+          setRefreshing(false);
+          writeIndicator(0);
+        }
+      } else {
+        writeIndicator(0);
+      }
+    };
+
+    // `passive: false` is the critical bit — without it preventDefault is ignored.
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: true });
+    el.addEventListener("touchcancel", onEnd, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, []);
 
   const todayKey = getTodayKey();
 
@@ -159,44 +240,46 @@ export function IdeaFeed({ ideas, isLoading, onRefresh, onStar, onLoadMore, hasM
     [ideas, todayKey]
   );
 
-  if (isLoading) {
-    return (
-      <div className="space-y-3 pt-2">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <Skeleton key={i} className="h-24 w-full rounded-xl" />
-        ))}
-      </div>
-    );
-  }
-
   const emptyMessage = viewMode === "today"
     ? "No ideas today yet. Tap + to capture one!"
     : "No ideas yet. Tap + to add one!";
 
-  const progress = Math.min(pullY / PULL_THRESHOLD, 1);
+  // Skeleton renders inside the same ref'd root so the pull-to-refresh native
+  // listener (attached in useEffect on mount) always has an element to bind to.
+  // Previously the skeleton branch returned its own div without the ref, so on
+  // initial load the listener never attached until the user left and returned
+  // to the tab.
+  if (isLoading) {
+    return (
+      <div ref={rootRef} style={{ touchAction: "pan-y" }}>
+        <div className="space-y-3 pt-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-24 w-full rounded-xl" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-    >
-      {/* Pull-to-refresh indicator */}
+    <div ref={rootRef} style={{ touchAction: "pan-y" }}>
+      {/* Pull-to-refresh indicator — height + rotation driven via refs from the
+          native touch listener, so dragging doesn't re-render the whole feed. */}
       <div
+        ref={indicatorRef}
         className="flex items-center justify-center overflow-hidden"
-        style={{
-          height: pullY,
-          transition: pulling.current ? "none" : "height 0.3s ease",
-        }}
+        style={{ height: 0 }}
       >
         <RefreshCw
-          size={20}
+          ref={iconRef}
+          size={22}
           style={{
-            color: "var(--muted-foreground)",
-            opacity: progress,
-            transform: `rotate(${progress * 360}deg)`,
-            transition: pulling.current ? "none" : "transform 0.3s ease",
-            animation: refreshing ? "spin 0.8s linear infinite" : "none",
+            color: "var(--foreground)",
+            opacity: 0,
+            willChange: "transform, opacity",
+            // While refreshing, ptr-spin keyframes keep scale(1.15) so the icon
+            // doesn't shrink mid-animation.
+            animation: refreshing ? "ptr-spin 0.8s linear infinite" : "none",
           }}
         />
       </div>
@@ -302,9 +385,13 @@ export function IdeaFeed({ ideas, isLoading, onRefresh, onStar, onLoadMore, hasM
       )}
 
       <style jsx global>{`
+        @keyframes ptr-spin {
+          from { transform: rotate(0deg) scale(1.15); }
+          to   { transform: rotate(360deg) scale(1.15); }
+        }
         @keyframes spin {
           from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
+          to   { transform: rotate(360deg); }
         }
       `}</style>
     </div>

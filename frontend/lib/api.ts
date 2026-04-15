@@ -134,6 +134,56 @@ export function uploadFileWithProgress(
   });
 }
 
+export interface DailySummary {
+  date: string;
+  summary: string | null;
+  idea_count?: number;
+  created_at?: string;
+  cached?: boolean;
+}
+
+export async function fetchDailySummary(date?: string) {
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  const res = await fetch(`${API_BASE}/summary/daily${params.toString() ? `?${params}` : ""}`);
+  return handleResponse<DailySummary>(res);
+}
+
+export interface DailySummaryEntry {
+  date: string;
+  summary: string;
+  idea_count: number;
+  created_at: string;
+}
+
+export async function fetchIdeasByDate(date: string) {
+  const res = await fetch(`${API_BASE}/ideas/by-date?date=${encodeURIComponent(date)}`);
+  return handleResponse<{ ideas: import("./types").Idea[] }>(res);
+}
+
+export async function fetchAllDailySummaries() {
+  const res = await fetch(`${API_BASE}/summary/daily/all`);
+  return handleResponse<{ summaries: DailySummaryEntry[] }>(res);
+}
+
+export async function generateDailySummary(force = false, date?: string) {
+  const res = await fetch(`${API_BASE}/summary/daily`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force, date }),
+  });
+  return handleResponse<DailySummary>(res);
+}
+
+export async function transcribeAudio(ideaId: number) {
+  const res = await fetch(`${API_BASE}/transcribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idea_id: ideaId }),
+  });
+  return handleResponse<{ id: number; content: string; transcription: string }>(res);
+}
+
 export async function fetchCategories() {
   const res = await fetch(`${API_BASE}/categories`);
   return handleResponse<{ categories: import("./types").Category[] }>(res);

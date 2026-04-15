@@ -3,9 +3,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { mutate as globalMutate } from "swr";
 import { useUpload } from "@/lib/hooks/use-upload";
-import { createIdea } from "@/lib/api";
+import { createIdea, transcribeAudio } from "@/lib/api";
 import { Camera, Pencil, Video, X, Mic, Square, Play, Pause } from "lucide-react";
 import { toast } from "sonner";
+import { haptics } from "@/lib/haptics";
+import { useVisualViewport } from "@/lib/hooks/use-visual-viewport";
 
 interface CaptureSheetProps {
   open: boolean;
@@ -14,6 +16,11 @@ interface CaptureSheetProps {
   sketchBlob: Blob | null;
   clearSketch: () => void;
   onAdd?: (content: string) => void;
+  /** When the sheet opens with this true, immediately kick off a voice recording.
+   * Used by the "New Voice Memo" PWA home-screen shortcut so the user can tap
+   * the icon and be recording in one step. Consumed once per open. */
+  autoRecord?: boolean;
+  onAutoRecordConsumed?: () => void;
 }
 
 interface AudioPreview {
@@ -35,6 +42,8 @@ export function CaptureSheet({
   sketchBlob,
   clearSketch,
   onAdd,
+  autoRecord,
+  onAutoRecordConsumed,
 }: CaptureSheetProps) {
   const [content, setContent] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -54,6 +63,7 @@ export function CaptureSheet({
   const streamRef = useRef<MediaStream | null>(null);
 
   const { upload, uploading, uploadProgress } = useUpload();
+  const { keyboardInset } = useVisualViewport();
 
   // Keep upload toast percentage in sync with XHR progress
   useEffect(() => {
@@ -87,6 +97,17 @@ export function CaptureSheet({
       stopRecording(false);
     }
   }, [open]);
+
+  // Auto-start recording when launched from the "New Voice Memo" home-screen
+  // shortcut. Fires once per open, then clears the flag upstream so a manual
+  // re-open doesn't re-record.
+  useEffect(() => {
+    if (!open || !autoRecord) return;
+    void startRecording();
+    onAutoRecordConsumed?.();
+    // startRecording is a stable closure on this render; intentionally not in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, autoRecord]);
 
   const stopRecording = useCallback((save = true) => {
     if (timerRef.current) {
@@ -191,6 +212,7 @@ export function CaptureSheet({
   const handleSave = async () => {
     const allMediaFiles = audioPreview ? [...files, audioPreview.file] : [...files];
     if (!content.trim() && allMediaFiles.length === 0 && !sketchBlob) return;
+    haptics.success();
 
     const capturedContent = content;
     const capturedFiles = allMediaFiles;
@@ -222,12 +244,23 @@ export function CaptureSheet({
         uploadFiles.push(new File([capturedSketch], "sketch.png", { type: "image/png" }));
       }
 
+      const hasAudio = uploadFiles.some((f) => f.type.startsWith("audio/"));
       const toastId = toast.loading("Uploading… 0%");
       uploadToastIdRef.current = toastId;
       upload(ideaId, uploadFiles)
-        .then(() => {
+        .then(async () => {
           uploadToastIdRef.current = undefined;
-          toast.success("Uploaded", { id: toastId });
+          if (hasAudio) {
+            toast.loading("Transcribing…", { id: toastId });
+            try {
+              await transcribeAudio(ideaId);
+              toast.success("Transcribed", { id: toastId });
+            } catch (e) {
+              toast.error(`Transcription failed: ${e instanceof Error ? e.message : "unknown error"}`, { id: toastId });
+            }
+          } else {
+            toast.success("Uploaded", { id: toastId });
+          }
           globalMutate("ideas").catch(() => {});
         })
         .catch((e) => {
@@ -258,13 +291,17 @@ export function CaptureSheet({
         onClick={() => onOpenChange(false)}
       />
 
-      {/* Sheet */}
+      {/* Sheet — lifts above the iOS keyboard via visualViewport inset */}
       <div
-        className="fixed left-0 right-0 bottom-0 z-50 rounded-t-2xl flex flex-col"
+        className="fixed left-0 right-0 z-50 rounded-t-2xl flex flex-col"
         style={{
           backgroundColor: "var(--background)",
-          maxHeight: "92dvh",
+          // When the keyboard is up, `innerHeight - keyboardInset` is the
+          // actual visible area. Cap sheet height so it can't be taller.
+          maxHeight: `calc(92dvh - ${keyboardInset}px)`,
+          bottom: keyboardInset,
           borderTop: "1px solid var(--border)",
+          transition: "bottom 0.15s ease, max-height 0.15s ease",
         }}
       >
         {/* Drag handle */}
@@ -293,6 +330,11 @@ export function CaptureSheet({
             placeholder="What's on your mind?"
             autoFocus
             rows={4}
+            inputMode="text"
+            autoCapitalize="sentences"
+            autoCorrect="on"
+            spellCheck
+            enterKeyHint="enter"
             className="w-full resize-none rounded-xl p-3.5 text-sm outline-none leading-relaxed"
             style={{
               backgroundColor: "var(--card)",

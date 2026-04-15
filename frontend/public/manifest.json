@@ -19,5 +19,28 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Idea",
+      "short_name": "Idea",
+      "description": "Capture a new thought",
+      "url": "/?capture=text",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "New Sketch",
+      "short_name": "Sketch",
+      "description": "Draw something",
+      "url": "/?capture=sketch",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "New Voice Memo",
+      "short_name": "Voice",
+      "description": "Record a voice memo",
+      "url": "/?capture=voice",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
   ]
 }

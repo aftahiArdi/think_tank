@@ -10,6 +10,7 @@ import { GlowCard } from "@/components/ui/glow-card";
 import { YouTubePreview, extractYouTubeVideoId } from "@/components/ui/youtube-preview";
 import { LinkPreview } from "@/components/ui/link-preview";
 import { formatTime } from "@/lib/utils/dates";
+import { haptics } from "@/lib/haptics";
 
 interface IdeaCardProps {
   idea: Idea;
@@ -94,6 +95,7 @@ export const IdeaCard = memo(function IdeaCard({ idea, onClick, onStar }: IdeaCa
         <button
           onClick={(e) => {
             e.stopPropagation();
+            haptics.tap();
             onStar(!idea.starred);
           }}
           className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center rounded-lg"

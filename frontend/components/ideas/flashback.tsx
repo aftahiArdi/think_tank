@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { Shuffle, ChevronLeft, ChevronRight } from "lucide-react";
+import { Shuffle, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import type { Idea } from "@/lib/types";
 import { fetchOnThisDay, fetchRandomIdea } from "@/lib/api";
 
@@ -187,23 +187,33 @@ export function Flashback(_props: FlashbackProps) {
               />
               <button
                 onClick={shuffle}
-                className="flex items-center gap-1.5 mt-3 pt-2 w-full justify-center"
+                disabled={randomLoading}
+                className="flex items-center gap-1.5 mt-3 pt-2 w-full justify-center disabled:opacity-60"
                 style={{ borderTop: "1px solid var(--border)" }}
               >
-                <Shuffle size={13} style={{ color: "var(--muted-foreground)" }} />
+                {randomLoading ? (
+                  <Loader2 size={13} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
+                ) : (
+                  <Shuffle size={13} style={{ color: "var(--muted-foreground)" }} />
+                )}
                 <span className="text-[11px] font-semibold" style={{ color: "var(--muted-foreground)" }}>
-                  Another one
+                  {randomLoading ? "Loading\u2026" : "Another one"}
                 </span>
               </button>
             </>
           ) : (
             <button
               onClick={shuffle}
-              className="flex items-center justify-center gap-2 w-full py-2"
+              disabled={randomLoading}
+              className="flex items-center justify-center gap-2 w-full py-2 disabled:opacity-60"
             >
-              <Shuffle size={16} style={{ color: "var(--muted-foreground)" }} />
+              {randomLoading ? (
+                <Loader2 size={16} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
+              ) : (
+                <Shuffle size={16} style={{ color: "var(--muted-foreground)" }} />
+              )}
               <span className="text-sm font-medium" style={{ color: "var(--muted-foreground)" }}>
-                Resurface a random idea
+                {randomLoading ? "Finding one\u2026" : "Resurface a random idea"}
               </span>
             </button>
           )}

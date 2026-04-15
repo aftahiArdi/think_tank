@@ -13,6 +13,7 @@ import { SearchBar } from "@/components/search/search-bar";
 import { SearchResults } from "@/components/search/search-results";
 import { ThemeSelector } from "@/components/theme/theme-selector";
 import { StatsView } from "@/components/stats/stats-view";
+import { SummariesView } from "@/components/summaries/summaries-view";
 import { FeedView } from "@/components/feed/feed-view";
 import { FeedPostCard } from "@/components/feed/feed-post-card";
 import { AvatarCircle } from "@/components/feed/avatar-circle";
@@ -28,11 +29,35 @@ import { toast } from "sonner";
 export function HomeClient() {
   const [activeTab, setActiveTab] = useState<TabName>("ideas");
   const [captureOpen, setCaptureOpen] = useState(false);
+  const [autoRecord, setAutoRecord] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
   const [sketchOpen, setSketchOpen] = useState(false);
   const [sketchBlob, setSketchBlob] = useState<Blob | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [starredSort, setStarredSort] = useState<"desc" | "asc">("desc");
   const avatarInputRef = useRef<HTMLInputElement>(null);
+
+  // PWA home-screen shortcuts (manifest.json `shortcuts`) launch the app with
+  // ?capture=text|sketch|voice. Handle those on mount, then strip the query
+  // so a reload doesn't re-trigger the sheet.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const capture = params.get("capture");
+    if (!capture) return;
+    if (capture === "text") {
+      setCaptureOpen(true);
+    } else if (capture === "sketch") {
+      setSketchOpen(true);
+    } else if (capture === "voice") {
+      setAutoRecord(true);
+      setCaptureOpen(true);
+    }
+    params.delete("capture");
+    const clean = window.location.pathname + (params.toString() ? `?${params}` : "");
+    window.history.replaceState(null, "", clean);
+  }, []);
 
   const username = getCurrentUsername() ?? "";
 
@@ -47,7 +72,13 @@ export function HomeClient() {
     activeTab === "starred" ? "starred-ideas" : null,
     () => fetchStarredIdeas(),
   );
-  const starredIdeas = starredResp?.ideas ?? ideas.filter(i => i.starred);
+  const starredIdeasRaw = starredResp?.ideas ?? ideas.filter(i => i.starred);
+  // Timestamps are stored as "YYYY-MM-DD HH:MM:SS" — lexicographic compare matches chronological.
+  const starredIdeas = [...starredIdeasRaw].sort((a, b) =>
+    starredSort === "desc"
+      ? b.timestamp.localeCompare(a.timestamp)
+      : a.timestamp.localeCompare(b.timestamp),
+  );
 
   const handleStarFromStarredTab = async (id: number, starred: boolean) => {
     // Optimistically drop the idea from the starred list on unstar, then fall
@@ -86,7 +117,11 @@ export function HomeClient() {
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "var(--background)", paddingBottom: "calc(env(safe-area-inset-bottom) + 96px)" }}>
-      <Header onSettingsClick={() => setSettingsOpen(true)} ideaCount={ideas.length} />
+      <Header
+        onSettingsClick={() => setSettingsOpen(true)}
+        onStatsClick={() => setStatsOpen(true)}
+        ideaCount={ideas.length}
+      />
 
       <main className="px-4 pt-2 max-w-lg mx-auto">
         {activeTab === "ideas" && (
@@ -129,6 +164,33 @@ export function HomeClient() {
               </div>
             ) : (
               <>
+                {starredIdeas.length > 1 && (
+                  <div
+                    className="flex rounded-xl p-0.5"
+                    style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+                  >
+                    <button
+                      onClick={() => setStarredSort("desc")}
+                      className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold"
+                      style={{
+                        backgroundColor: starredSort === "desc" ? "var(--foreground)" : "transparent",
+                        color: starredSort === "desc" ? "var(--background)" : "var(--muted-foreground)",
+                      }}
+                    >
+                      Newest first
+                    </button>
+                    <button
+                      onClick={() => setStarredSort("asc")}
+                      className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold"
+                      style={{
+                        backgroundColor: starredSort === "asc" ? "var(--foreground)" : "transparent",
+                        color: starredSort === "asc" ? "var(--background)" : "var(--muted-foreground)",
+                      }}
+                    >
+                      Oldest first
+                    </button>
+                  </div>
+                )}
                 {starredIdeas.length > 0 && (
                   <div className="space-y-2">
                     {starredIdeas.map(idea => (
@@ -162,18 +224,17 @@ export function HomeClient() {
           </div>
         )}
 
-        {activeTab === "categories" && (
-          <div className="space-y-6 pt-2">
-            <StatsView ideas={ideas} />
-          </div>
-        )}
+        {activeTab === "summaries" && <SummariesView />}
       </main>
 
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} onAdd={() => setCaptureOpen(true)} />
 
       <CaptureSheet
         open={captureOpen}
-        onOpenChange={setCaptureOpen}
+        onOpenChange={(v) => {
+          setCaptureOpen(v);
+          if (!v) setAutoRecord(false);
+        }}
         onAdd={addIdea}
         onSketchOpen={() => {
           setCaptureOpen(false);
@@ -181,6 +242,8 @@ export function HomeClient() {
         }}
         sketchBlob={sketchBlob}
         clearSketch={() => setSketchBlob(null)}
+        autoRecord={autoRecord}
+        onAutoRecordConsumed={() => setAutoRecord(false)}
       />
 
       <SketchPad
@@ -195,6 +258,20 @@ export function HomeClient() {
           setCaptureOpen(true);
         }}
       />
+
+      <Dialog open={statsOpen} onOpenChange={setStatsOpen}>
+        <DialogContent
+          className="max-h-[85vh] overflow-y-auto"
+          style={{ backgroundColor: "var(--background)", borderColor: "var(--border)" }}
+        >
+          <DialogHeader>
+            <DialogTitle style={{ color: "var(--foreground)" }}>Stats</DialogTitle>
+          </DialogHeader>
+          <div className="pt-1">
+            <StatsView ideas={ideas} />
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent style={{ backgroundColor: "var(--background)", borderColor: "var(--border)" }}>
