@@ -140,6 +140,8 @@ export interface DailySummary {
   idea_count?: number;
   created_at?: string;
   cached?: boolean;
+  pending?: boolean;
+  error?: string;
 }
 
 export async function fetchDailySummary(date?: string) {
@@ -172,7 +174,24 @@ export async function generateDailySummary(force = false, date?: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force, date }),
   });
-  return handleResponse<DailySummary>(res);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Request failed: ${res.status}`);
+  }
+  const initial = (await res.json()) as DailySummary;
+  if (initial.summary) return initial;
+
+  // Backend returned 202 pending — poll GET /summary/daily until the row
+  // lands or an error is reported. Ollama on CPU can take 1-2 min.
+  const pollDate = initial.date || date;
+  const deadline = Date.now() + 10 * 60 * 1000; // 10 min ceiling
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 4000));
+    const current = await fetchDailySummary(pollDate);
+    if (current.error) throw new Error(current.error);
+    if (current.summary) return current;
+  }
+  throw new Error("Summary is still generating — check back shortly.");
 }
 
 export async function transcribeAudio(ideaId: number) {

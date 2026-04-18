@@ -121,6 +121,9 @@ Flask runs on port 6000 internally. Direct access (iPhone Shortcuts, cron jobs) 
 - SWR: background revalidation disabled — manual pull-to-refresh only
 - Service worker: static JS/CSS cached on first load, served from disk after
 - Password env var: read from `THINK_TANK_PASSWORD` in `.env` (was hardcoded "changeme" — now fixed)
+- Next.js proxy body limit: `proxyClientMaxBodySize: "500mb"` in `next.config.ts` (Next.js 16 defaults to 10MB, which truncates video uploads)
+- Daily summary: async fire-and-forget via daemon thread + client polling (Ollama on CPU takes 30-120s, exceeds gunicorn timeout if done synchronously)
+- Summary card navigation: SWR cache pre-populated on click so recap detail page renders instantly
 
 ## Known tech debt / future work
 

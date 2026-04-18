@@ -13,6 +13,7 @@ import { Sparkles, ChevronRight } from "lucide-react";
 import {
   fetchAllDailySummaries,
   fetchDailySummary,
+  fetchIdeasByDate,
   generateDailySummary,
   type DailySummaryEntry,
 } from "@/lib/api";
@@ -29,7 +30,22 @@ function SummaryCard({ entry }: { entry: DailySummaryEntry }) {
   return (
     <Link
       href={`/recap/${entry.date}`}
-      onClick={() => haptics.tap()}
+
+      prefetch={true}
+      onClick={() => {
+        haptics.tap();
+        // Pre-populate the detail page's SWR cache so the summary renders
+        // instantly instead of showing a skeleton while re-fetching.
+        globalMutate(["daily-summary", entry.date], {
+          date: entry.date,
+          summary: entry.summary,
+          idea_count: entry.idea_count,
+          created_at: entry.created_at,
+          cached: true,
+        }, { revalidate: false });
+        // Kick off the ideas fetch early — the detail page will get a cache hit.
+        globalMutate(["ideas-by-date", entry.date], fetchIdeasByDate(entry.date), { revalidate: false });
+      }}
       className="block rounded-xl p-3.5 active:opacity-70 transition-opacity"
       style={{
         backgroundColor: "var(--card)",

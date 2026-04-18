@@ -1208,6 +1208,65 @@ def transcribe_audio():
     return jsonify({'id': idea_id, 'content': new_content, 'transcription': text}), 200
 
 
+# In-memory job tracker for async daily-summary generation.
+# Key: (user_id, date_str). Value: 'pending' or 'error:<msg>'.
+# Cleared once the row lands in daily_summaries (or on error read).
+_summary_jobs_lock = threading.Lock()
+_summary_jobs: dict = {}
+
+
+def _build_summary_prompt(ideas_blob: str) -> str:
+    """Build the Ollama prompt for daily summaries. Optimised for small models
+    (llama3.2:3b) — one-shot example, explicit structure, low instruction density."""
+    return (
+        "You are summarizing someone's personal journal entries from one day.\n\n"
+        "Rules:\n"
+        "1. Write exactly 3-5 sentences in second person ('you').\n"
+        "2. First sentence: the overall vibe/emotional tone of the day in one line.\n"
+        "3. Middle sentences: main themes, recurring threads, and anything notable.\n"
+        "4. Last sentence: any decisions made or action items, starting with '→'. "
+        "If there are none, skip this.\n"
+        "5. Only describe what is written. Do not invent or assume anything.\n"
+        "6. No headings, no bullet points, no preamble. Just the paragraph.\n\n"
+        "Example input:\n"
+        "- [09:15] woke up feeling decent, had coffee\n"
+        "- [11:30] meeting with tom about the project timeline, we agreed to push it back a week\n"
+        "- [14:00] feeling anxious about the deadline still\n"
+        "- [20:00] went for a run, cleared my head\n\n"
+        "Example output:\n"
+        "You had a mixed day — decent energy in the morning but anxiety crept in by afternoon. "
+        "Work dominated your headspace, especially the project timeline discussion with Tom. "
+        "You closed the day with a run that helped reset. "
+        "→ You and Tom agreed to push the project deadline back one week.\n\n"
+        f"Now summarize this day:\n{ideas_blob}"
+    )
+
+
+def _run_summary_job(user_id, date_str, prompt, model, idea_count):
+    try:
+        summary = _ollama_chat(prompt, model)
+        if not summary:
+            with _summary_jobs_lock:
+                _summary_jobs[(user_id, date_str)] = 'error:Empty summary.'
+            return
+        conn = get_conn()
+        try:
+            cursor = conn.cursor()
+            created_at = datetime.now(VANCOUVER_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute(
+                'INSERT OR REPLACE INTO daily_summaries (user_id, date, content, idea_count, model, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+                (user_id, date_str, summary, idea_count, model, created_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with _summary_jobs_lock:
+            _summary_jobs.pop((user_id, date_str), None)
+    except Exception as e:
+        with _summary_jobs_lock:
+            _summary_jobs[(user_id, date_str)] = f'error:{e}'
+
+
 def _ollama_chat(prompt: str, model: str) -> str:
     """Call local Ollama /api/chat and return the assistant's text.
     Raises RuntimeError on any transport/parse failure."""
@@ -1234,6 +1293,69 @@ def _ollama_chat(prompt: str, model: str) -> str:
         raise RuntimeError(f'Ollama request failed: {e}')
     msg = (body.get('message') or {}).get('content') or ''
     return msg.strip()
+
+
+def _auto_generate_summaries():
+    """End-of-day auto-summary: at 11:59 PM Vancouver time, generate a summary
+    for every user who captured ideas today but hasn't generated one yet."""
+    import time
+    while True:
+        now = datetime.now(VANCOUVER_TZ)
+        target = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        if now >= target:
+            from datetime import timedelta
+            target += timedelta(days=1)
+        sleep_secs = (target - now).total_seconds()
+        time.sleep(sleep_secs)
+
+        date_str = datetime.now(VANCOUVER_TZ).strftime('%Y-%m-%d')
+        model = os.environ.get('OLLAMA_MODEL', 'llama3.2:3b')
+        try:
+            conn = get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT user_id FROM ideas WHERE timestamp LIKE ?",
+                (f'{date_str}%',),
+            )
+            user_ids = [r['user_id'] for r in cursor.fetchall()]
+            for uid in user_ids:
+                cursor.execute(
+                    'SELECT 1 FROM daily_summaries WHERE user_id = ? AND date = ?',
+                    (uid, date_str),
+                )
+                if cursor.fetchone():
+                    continue
+                cursor.execute(
+                    "SELECT content, timestamp FROM ideas WHERE user_id = ? AND timestamp LIKE ? ORDER BY timestamp ASC",
+                    (uid, f'{date_str}%'),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    continue
+                lines = []
+                for r in rows:
+                    text = (r['content'] or '').strip()
+                    if not text:
+                        continue
+                    time_part = (r['timestamp'] or '').split(' ')[1][:5] if ' ' in (r['timestamp'] or '') else ''
+                    lines.append(f"- [{time_part}] {text}")
+                if not lines:
+                    continue
+                ideas_blob = '\n'.join(lines)
+                prompt = _build_summary_prompt(ideas_blob)
+                t = threading.Thread(
+                    target=_run_summary_job,
+                    args=(uid, date_str, prompt, model, len(rows)),
+                    daemon=True,
+                )
+                t.start()
+            conn.close()
+        except Exception as e:
+            print(f"[auto-summary] Error: {e}")
+
+
+_auto_summary_thread = threading.Thread(target=_auto_generate_summaries, daemon=True)
+_auto_summary_thread.start()
 
 
 @app.route('/summary/daily', methods=['POST'])
@@ -1283,41 +1405,33 @@ def daily_summary():
         lines.append(f"- [{time_part}] {text}")
     ideas_blob = '\n'.join(lines)
 
-    prompt = (
-        "You are summarizing one person's stream-of-consciousness ideas from a single day. "
-        "Write a warm, concise summary (4-7 sentences) that surfaces the main themes, any "
-        "recurring threads, notable emotional tone, and anything that looks like a decision or "
-        "an action item. Use second person ('you'). Do not list every idea — synthesize. "
-        "Do not add a heading.\n\n"
-        f"Date: {date_str}\nIdeas:\n{ideas_blob}"
-    )
+    prompt = _build_summary_prompt(ideas_blob)
 
     model = os.environ.get('OLLAMA_MODEL', 'llama3.2:3b')
-    try:
-        summary = _ollama_chat(prompt, model)
-    except Exception as e:
-        conn.close()
-        return jsonify({'error': f'Summary failed: {e}'}), 500
-
-    if not summary:
-        conn.close()
-        return jsonify({'error': 'Empty summary.'}), 500
-
-    created_at = datetime.now(VANCOUVER_TZ).strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute(
-        'INSERT OR REPLACE INTO daily_summaries (user_id, date, content, idea_count, model, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        (user_id, date_str, summary, len(rows), model, created_at),
-    )
-    conn.commit()
     conn.close()
+
+    # Fire-and-forget: Ollama on CPU can take 30-120s, which exceeds the
+    # gunicorn worker timeout. Run in a daemon thread and let the client poll
+    # GET /summary/daily until the row appears.
+    key = (user_id, date_str)
+    with _summary_jobs_lock:
+        already_pending = _summary_jobs.get(key) == 'pending'
+        if not already_pending:
+            _summary_jobs[key] = 'pending'
+
+    if not already_pending:
+        t = threading.Thread(
+            target=_run_summary_job,
+            args=(user_id, date_str, prompt, model, len(rows)),
+            daemon=True,
+        )
+        t.start()
 
     return jsonify({
         'date': date_str,
-        'summary': summary,
+        'status': 'pending',
         'idea_count': len(rows),
-        'created_at': created_at,
-        'cached': False,
-    }), 200
+    }), 202
 
 
 @app.route('/summary/daily/all', methods=['GET'])
@@ -1358,15 +1472,24 @@ def daily_summary_get():
     )
     row = cursor.fetchone()
     conn.close()
-    if not row:
-        return jsonify({'date': date_str, 'summary': None}), 200
-    return jsonify({
-        'date': date_str,
-        'summary': row['content'],
-        'idea_count': row['idea_count'],
-        'created_at': row['created_at'],
-        'cached': True,
-    }), 200
+    if row:
+        return jsonify({
+            'date': date_str,
+            'summary': row['content'],
+            'idea_count': row['idea_count'],
+            'created_at': row['created_at'],
+            'cached': True,
+        }), 200
+
+    key = (user_id, date_str)
+    with _summary_jobs_lock:
+        job = _summary_jobs.get(key)
+        if job and job.startswith('error:'):
+            _summary_jobs.pop(key, None)
+            return jsonify({'date': date_str, 'summary': None, 'error': job[6:]}), 200
+    if job == 'pending':
+        return jsonify({'date': date_str, 'summary': None, 'pending': True}), 200
+    return jsonify({'date': date_str, 'summary': None}), 200
 
 
 @app.route('/uploads/<path:filename>')
