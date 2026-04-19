@@ -8,6 +8,7 @@ import { BottomNav, type TabName } from "@/components/layout/bottom-nav";
 import { IdeaFeed } from "@/components/ideas/idea-feed";
 import { IdeaCard } from "@/components/ideas/idea-card";
 import { CaptureSheet } from "@/components/ideas/capture-sheet";
+import { MoodSheet } from "@/components/mood/mood-sheet";
 import { SketchPad } from "@/components/sketch/sketch-pad";
 import { SearchBar } from "@/components/search/search-bar";
 import { SearchResults } from "@/components/search/search-results";
@@ -32,6 +33,7 @@ export function HomeClient() {
   const [autoRecord, setAutoRecord] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [moodOpen, setMoodOpen] = useState(false);
   const [sketchOpen, setSketchOpen] = useState(false);
   const [sketchBlob, setSketchBlob] = useState<Blob | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -120,6 +122,7 @@ export function HomeClient() {
       <Header
         onSettingsClick={() => setSettingsOpen(true)}
         onStatsClick={() => setStatsOpen(true)}
+        onMoodClick={() => setMoodOpen(true)}
         ideaCount={ideas.length}
       />
 
@@ -228,6 +231,8 @@ export function HomeClient() {
       </main>
 
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} onAdd={() => setCaptureOpen(true)} />
+
+      <MoodSheet open={moodOpen} onOpenChange={setMoodOpen} />
 
       <CaptureSheet
         open={captureOpen}

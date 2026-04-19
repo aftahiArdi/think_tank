@@ -24,6 +24,9 @@ export interface Idea {
   is_shared: boolean;
   category: Category | null;
   media: IdeaMedia[];
+  latitude: number | null;
+  longitude: number | null;
+  location_name: string | null;
 }
 
 export interface FeedPost {
@@ -71,3 +74,18 @@ export type ThemeName =
   | "warm-charcoal"
   | "nord"
   | "forest";
+
+export interface Mood {
+  id: number;
+  mood_value: number;
+  timestamp: string;
+  label: string | null;
+  cause: string | null;
+  idea_id: number | null;
+}
+
+export interface MoodHistory {
+  moods: Mood[];
+  average: number | null;
+  average_label: string | null;
+}

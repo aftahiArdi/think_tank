@@ -2,14 +2,17 @@
 
 import { Settings, BarChart3 } from "lucide-react";
 import { CountUp } from "@/components/ui/count-up";
+import { MoodButton } from "@/components/mood/mood-button";
 
 export function Header({
   onSettingsClick,
   onStatsClick,
+  onMoodClick,
   ideaCount = 0,
 }: {
   onSettingsClick: () => void;
   onStatsClick?: () => void;
+  onMoodClick?: () => void;
   ideaCount?: number;
 }) {
   return (
@@ -37,6 +40,7 @@ export function Header({
         )}
       </div>
       <div className="flex items-center gap-2">
+        {onMoodClick && <MoodButton onClick={onMoodClick} />}
         {onStatsClick && (
           <button
             onClick={onStatsClick}

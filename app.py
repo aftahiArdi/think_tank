@@ -110,6 +110,25 @@ def init_db():
         )
     ''')
 
+    # Mood check-ins — standalone from ideas. Nullable columns are intentional
+    # placeholders for future extensions (descriptors, causes, idea linkage).
+    # See docs/superpowers/specs/2026-04-18-mood-tracking-design.md.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS moods (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mood_value INTEGER NOT NULL,
+            timestamp DATETIME NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            label TEXT,
+            cause TEXT,
+            idea_id INTEGER REFERENCES ideas(id) ON DELETE SET NULL
+        )
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_moods_user_timestamp
+        ON moods(user_id, timestamp DESC)
+    ''')
+
     # Migrate ideas table: add columns if missing
     cursor.execute("PRAGMA table_info(ideas)")
     ideas_cols = [col[1] for col in cursor.fetchall()]
@@ -126,6 +145,12 @@ def init_db():
         cursor.execute("ALTER TABLE ideas ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
     if "user_id" not in ideas_cols:
         cursor.execute("ALTER TABLE ideas ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1")
+    if "latitude" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN latitude REAL")
+    if "longitude" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN longitude REAL")
+    if "location_name" not in ideas_cols:
+        cursor.execute("ALTER TABLE ideas ADD COLUMN location_name TEXT")
 
     # Migrate categories table
     cursor.execute("PRAGMA table_info(categories)")
@@ -415,6 +440,7 @@ def list_ideas():
         if before:
             cursor.execute('''
                 SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                       i.latitude, i.longitude, i.location_name,
                        c.name as category_name, c.color as category_color,
                        u.username as owner_username,
                        CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
@@ -429,6 +455,7 @@ def list_ideas():
         else:
             cursor.execute('''
                 SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                       i.latitude, i.longitude, i.location_name,
                        c.name as category_name, c.color as category_color,
                        u.username as owner_username,
                        CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
@@ -473,7 +500,10 @@ def list_ideas():
                 'owner_username': row['owner_username'],
                 'is_shared': bool(row['is_shared']),
                 'category': None,
-                'media': media_by_idea.get(row['id'], [])
+                'media': media_by_idea.get(row['id'], []),
+                'latitude': row['latitude'],
+                'longitude': row['longitude'],
+                'location_name': row['location_name'],
             }
             if row['category_id']:
                 idea['category'] = {
@@ -508,6 +538,7 @@ def ideas_by_date():
     cursor = conn.cursor()
     cursor.execute('''
         SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+               i.latitude, i.longitude, i.location_name,
                c.name as category_name, c.color as category_color,
                u.username as owner_username,
                CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
@@ -548,6 +579,9 @@ def ideas_by_date():
             'is_shared': bool(row['is_shared']),
             'category': None,
             'media': media_by_idea.get(row['id'], []),
+            'latitude': row['latitude'],
+            'longitude': row['longitude'],
+            'location_name': row['location_name'],
         }
         if row['category_id']:
             idea['category'] = {
@@ -595,6 +629,7 @@ def random_idea():
         cursor.execute(
             """
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
+                   i.latitude, i.longitude, i.location_name,
                    u.username as owner_username,
                    CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
             FROM ideas i
@@ -639,6 +674,9 @@ def random_idea():
                 'is_shared': bool(row['is_shared']),
                 'category': None,
                 'media': media,
+                'latitude': row['latitude'],
+                'longitude': row['longitude'],
+                'location_name': row['location_name'],
             }
         }), 200
     except Exception as e:
@@ -663,6 +701,7 @@ def on_this_day():
         cursor.execute(
             """
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
+                   i.latitude, i.longitude, i.location_name,
                    u.username as owner_username,
                    CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
             FROM ideas i
@@ -685,6 +724,7 @@ def on_this_day():
             """
             WITH ranked AS (
                 SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred,
+                       i.latitude, i.longitude, i.location_name,
                        u.username as owner_username,
                        CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared,
                        CAST((julianday(date('now', 'localtime'))
@@ -741,6 +781,9 @@ def on_this_day():
                 'is_shared': bool(r['is_shared']),
                 'category': None,
                 'media': media_by_idea.get(r['id'], []),
+                'latitude': r['latitude'],
+                'longitude': r['longitude'],
+                'location_name': r['location_name'],
             }
             for r in rows
         ]
@@ -764,6 +807,7 @@ def starred_ideas():
         cursor.execute(
             """
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                   i.latitude, i.longitude, i.location_name,
                    c.name as category_name, c.color as category_color,
                    u.username as owner_username,
                    CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
@@ -808,6 +852,9 @@ def starred_ideas():
                 'is_shared': bool(row['is_shared']),
                 'category': None,
                 'media': media_by_idea.get(row['id'], []),
+                'latitude': row['latitude'],
+                'longitude': row['longitude'],
+                'location_name': row['location_name'],
             }
             if row['category_id']:
                 idea['category'] = {
@@ -867,18 +914,282 @@ def create_idea():
     content = data.get('content', '')
     category_id = data.get('category_id')
 
+    # Optional location. Accept only well-formed floats in valid ranges so we
+    # never persist garbage from a misbehaving client. If either axis is
+    # missing or out-of-range we drop the location entirely — idea still saves.
+    lat_in = data.get('latitude')
+    lng_in = data.get('longitude')
+    latitude: float | None = None
+    longitude: float | None = None
+    try:
+        if lat_in is not None and lng_in is not None:
+            latf = float(lat_in)
+            lngf = float(lng_in)
+            if -90.0 <= latf <= 90.0 and -180.0 <= lngf <= 180.0:
+                latitude = latf
+                longitude = lngf
+    except (TypeError, ValueError):
+        pass
+
     try:
         conn = get_conn()
         cursor = conn.cursor()
         vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            'INSERT INTO ideas (content, timestamp, category_id, user_id) VALUES (?, ?, ?, ?)',
-            (content, vancouver_time, category_id, user_id)
+            'INSERT INTO ideas (content, timestamp, category_id, user_id, latitude, longitude) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (content, vancouver_time, category_id, user_id, latitude, longitude)
         )
         idea_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        return jsonify({'id': idea_id, 'message': 'Idea saved.'}), 201
+
+        # Fire-and-forget reverse geocode. Never blocks the capture response.
+        if latitude is not None and longitude is not None:
+            threading.Thread(
+                target=_enrich_location_async,
+                args=(idea_id, latitude, longitude),
+                daemon=True,
+            ).start()
+
+        return jsonify({
+            'id': idea_id,
+            'message': 'Idea saved.',
+            'latitude': latitude,
+            'longitude': longitude,
+            'location_name': None,
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# --- Reverse geocoding (Nominatim / OpenStreetMap) ---
+# Auto-attach location design: POST /ideas stores lat/lng synchronously; a
+# daemon thread enriches the row with a human place name out of band. The
+# client refetches and sees the name fill in seconds later. Same pattern as
+# the daily summary (fire-and-forget bg thread, no gunicorn timeout risk).
+
+import urllib.request  # noqa: E402
+import urllib.parse  # noqa: E402
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+# Nominatim ToS requires a contact User-Agent. Set to this project's identifier.
+NOMINATIM_UA = "ThinkTank/1.0 (self-hosted personal PWA)"
+NOMINATIM_TIMEOUT = 5  # seconds
+
+
+def _pick_place_name(address: dict, display_name: str) -> str:
+    """Choose a short, editorial place name from a Nominatim address block.
+    Prefer POI → neighbourhood → suburb → city, then append city where useful.
+    Falls back to the first two comma-separated tokens of display_name."""
+    if not address:
+        if display_name:
+            return ", ".join(display_name.split(", ")[:2])
+        return ""
+
+    city = (
+        address.get("city")
+        or address.get("town")
+        or address.get("village")
+        or address.get("hamlet")
+        or address.get("municipality")
+        or ""
+    )
+    poi = (
+        address.get("amenity")
+        or address.get("shop")
+        or address.get("tourism")
+        or address.get("leisure")
+        or address.get("building")
+        or address.get("office")
+    )
+    area = address.get("neighbourhood") or address.get("suburb") or address.get("quarter")
+
+    if poi and city:
+        return f"{poi}, {city}"
+    if poi:
+        return poi
+    if area and city and area != city:
+        return f"{area}, {city}"
+    if area:
+        return area
+    if city:
+        state = address.get("state") or address.get("region") or ""
+        return f"{city}, {state}".rstrip(", ") if state else city
+    if display_name:
+        return ", ".join(display_name.split(", ")[:2])
+    return ""
+
+
+def reverse_geocode(lat: float, lng: float) -> str | None:
+    """Return a short place name, or None if the lookup fails."""
+    try:
+        params = urllib.parse.urlencode({
+            "format": "jsonv2",
+            "lat": f"{lat:.6f}",
+            "lon": f"{lng:.6f}",
+            # zoom=18 asks Nominatim for building-level detail so POI fields
+            # (amenity, shop, leisure, building) come back populated. _pick_place_name
+            # falls through to neighbourhood/city if no POI matches the coords.
+            "zoom": "18",
+            "addressdetails": "1",
+        })
+        req = urllib.request.Request(
+            f"{NOMINATIM_URL}?{params}",
+            headers={"User-Agent": NOMINATIM_UA, "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=NOMINATIM_TIMEOUT) as resp:
+            body = resp.read()
+        data = json.loads(body.decode("utf-8"))
+        name = _pick_place_name(data.get("address") or {}, data.get("display_name") or "")
+        return name or None
+    except Exception:
+        return None
+
+
+def _enrich_location_async(idea_id: int, lat: float, lng: float) -> None:
+    """Background worker: fetch a place name and UPDATE the idea row."""
+    name = reverse_geocode(lat, lng)
+    if not name:
+        return
+    try:
+        conn = get_conn()
+        conn.execute(
+            'UPDATE ideas SET location_name = ? WHERE id = ? AND location_name IS NULL',
+            (name, idea_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+# Mood value → label mapping. Keep in sync with frontend/lib/mood.ts MOOD_LABELS.
+MOOD_LABELS = {
+    1: "Very Unpleasant",
+    2: "Unpleasant",
+    3: "Slightly Unpleasant",
+    4: "Neutral",
+    5: "Slightly Pleasant",
+    6: "Pleasant",
+    7: "Very Pleasant",
+}
+
+
+@app.route('/moods', methods=['POST'])
+def create_mood():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.get_json() or {}
+    mood_value = data.get('mood_value')
+    if not isinstance(mood_value, int) or mood_value < 1 or mood_value > 7:
+        return jsonify({'error': 'mood_value must be an integer 1-7'}), 400
+
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        vancouver_time = datetime.now(VANCOUVER_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            'INSERT INTO moods (mood_value, timestamp, user_id) VALUES (?, ?, ?)',
+            (mood_value, vancouver_time, user_id)
+        )
+        mood_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({
+            'id': mood_id,
+            'mood_value': mood_value,
+            'timestamp': vancouver_time,
+            'label': None,
+            'cause': None,
+            'idea_id': None,
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/moods', methods=['GET'])
+def list_moods():
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        days = int(request.args.get('days', 30))
+    except (TypeError, ValueError):
+        days = 30
+    if days < 1:
+        days = 1
+    if days > 3650:
+        days = 3650
+
+    try:
+        conn = get_conn()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            '''SELECT id, mood_value, timestamp, label, cause, idea_id
+               FROM moods
+               WHERE user_id = ?
+                 AND timestamp >= datetime('now', 'localtime', ?)
+               ORDER BY timestamp ASC''',
+            (user_id, f'-{days} days')
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        moods = [
+            {
+                'id': r['id'],
+                'mood_value': r['mood_value'],
+                'timestamp': r['timestamp'],
+                'label': r['label'],
+                'cause': r['cause'],
+                'idea_id': r['idea_id'],
+            }
+            for r in rows
+        ]
+
+        if moods:
+            avg = sum(m['mood_value'] for m in moods) / len(moods)
+            rounded = max(1, min(7, round(avg)))
+            average = round(avg, 2)
+            average_label = MOOD_LABELS[rounded]
+        else:
+            average = None
+            average_label = None
+
+        return jsonify({
+            'moods': moods,
+            'average': average,
+            'average_label': average_label,
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/moods/<int:mood_id>', methods=['DELETE'])
+def delete_mood(mood_id):
+    user_id = get_user_id()
+    if user_id is None:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM moods WHERE id = ? AND user_id = ?',
+            (mood_id, user_id)
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        if deleted == 0:
+            return jsonify({'error': 'Mood not found'}), 404
+        return jsonify({'ok': True}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -895,6 +1206,7 @@ def get_idea(idea_id):
 
         cursor.execute('''
             SELECT i.id, i.content, i.timestamp, i.media_type, i.has_media, i.starred, i.category_id,
+                   i.latitude, i.longitude, i.location_name,
                    c.name as category_name, c.color as category_color,
                    u.username as owner_username,
                    CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_shared
@@ -934,6 +1246,9 @@ def get_idea(idea_id):
             'is_shared': bool(row['is_shared']),
             'category': {'id': row['category_id'], 'name': row['category_name'], 'color': row['category_color']} if row['category_id'] else None,
             'media': media,
+            'latitude': row['latitude'],
+            'longitude': row['longitude'],
+            'location_name': row['location_name'],
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500

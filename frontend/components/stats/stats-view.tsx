@@ -4,6 +4,9 @@ import { useMemo, useRef, useEffect } from "react";
 import useSWR from "swr";
 import type { Idea } from "@/lib/types";
 import { fetchStatsData } from "@/lib/api";
+import { useMoods } from "@/lib/hooks/use-moods";
+import { MoodGraph } from "@/components/mood/mood-graph";
+import { MoodAverage } from "@/components/mood/mood-average";
 
 interface StatsViewProps {
   // Kept for API compatibility with existing callers. Stats now fetch their own
@@ -349,6 +352,8 @@ function SectionLabel({ children }: { children: string }) {
   );
 }
 
+const MOOD_DAYS = 30;
+
 export function StatsView(_props: StatsViewProps) {
   const { data, isLoading } = useSWR("stats-data", () => fetchStatsData(), {
     revalidateOnFocus: false,
@@ -356,6 +361,11 @@ export function StatsView(_props: StatsViewProps) {
   const allIdeas = data?.ideas ?? [];
   const stats = useMemo(() => computeStats(allIdeas), [allIdeas]);
   const heatmapRef = useRef<HTMLDivElement>(null);
+
+  const { data: moodData } = useMoods(MOOD_DAYS);
+  const moods = moodData?.moods ?? [];
+  const moodAverage = moodData?.average ?? null;
+  const moodAverageLabel = moodData?.average_label ?? null;
 
   useEffect(() => {
     if (heatmapRef.current) {
@@ -406,6 +416,20 @@ export function StatsView(_props: StatsViewProps) {
         <StatCard label="streak" value={stats.currentStreak} sub="days" accent />
         <StatCard label="avg / day" value={stats.avgPerDay} />
         <StatCard label="active days" value={stats.activeDays} />
+      </div>
+
+      {/* Mood */}
+      <div>
+        <SectionLabel>Mood</SectionLabel>
+        <div className="space-y-2">
+          <MoodAverage
+            average={moodAverage}
+            averageLabel={moodAverageLabel}
+            days={MOOD_DAYS}
+            count={moods.length}
+          />
+          <MoodGraph moods={moods} days={MOOD_DAYS} />
+        </div>
       </div>
 
       {/* This week vs last week */}

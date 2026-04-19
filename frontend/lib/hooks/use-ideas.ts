@@ -92,7 +92,11 @@ export function useIdeas(fallbackData?: FeedResponse) {
     return mutate();
   }, [mutate]);
 
-  const addIdea = async (content: string, categoryId?: number) => {
+  const addIdea = async (
+    content: string,
+    categoryId?: number,
+    location?: { latitude: number; longitude: number } | null,
+  ) => {
     const tempId = -Date.now();
     const optimistic: Idea = {
       id: tempId,
@@ -105,6 +109,9 @@ export function useIdeas(fallbackData?: FeedResponse) {
       is_shared: false,
       category: null,
       media: [],
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
+      location_name: null,
     };
 
     // Snapshot the pre-mutation list once — SWR passes the pre-optimistic cache
@@ -115,9 +122,12 @@ export function useIdeas(fallbackData?: FeedResponse) {
 
     // No post-write refetch: we already know the new row, just swap the temp id
     // for the server-assigned one. Saves a full feed GET round-trip per capture.
+    // Schedule a delayed revalidation so the server-side reverse-geocode
+    // result (location_name) fills in on the card within a few seconds.
     mutate(
       async () => {
-        const created = await createIdea(content, categoryId);
+        const created = await createIdea(content, categoryId, location ?? null);
+        setTimeout(() => { mutate().catch(() => {}); }, 3500);
         return {
           ideas: [{ ...optimistic, id: created.id }, ...prevList],
           next_before: prevCursor,

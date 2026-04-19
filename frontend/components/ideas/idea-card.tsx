@@ -9,6 +9,7 @@ import type { Idea } from "@/lib/types";
 import { GlowCard } from "@/components/ui/glow-card";
 import { YouTubePreview, extractYouTubeVideoId } from "@/components/ui/youtube-preview";
 import { LinkPreview } from "@/components/ui/link-preview";
+import { LocationPill } from "@/components/location/location-pill";
 import { formatTime } from "@/lib/utils/dates";
 import { haptics } from "@/lib/haptics";
 
@@ -157,8 +158,16 @@ export const IdeaCard = memo(function IdeaCard({ idea, onClick, onStar }: IdeaCa
         </div>
       )}
 
-      <div className="flex items-center justify-end">
-        <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <LocationPill
+            latitude={idea.latitude}
+            longitude={idea.longitude}
+            locationName={idea.location_name}
+            stopPropagation
+          />
+        </div>
+        <span className="text-xs flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
           {formatTime(idea.timestamp)}
         </span>
       </div>

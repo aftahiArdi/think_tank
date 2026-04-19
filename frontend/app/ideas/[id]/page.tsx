@@ -3,7 +3,7 @@
 import { use, useState } from "react";
 import { useRouter } from "next/navigation";
 import useSWR, { useSWRConfig } from "swr";
-import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check, Star, Share2 } from "lucide-react";
+import { ArrowLeft, Trash2, Calendar, Clock, Copy, Check, Star, Share2, MapPin } from "lucide-react";
 import { fetchIdea, deleteIdea, starIdea, shareIdea, unshareIdea } from "@/lib/api";
 import { ShareConfirmSheet } from "@/components/feed/share-confirm-sheet";
 import { getCurrentUsername } from "@/lib/biometric";
@@ -218,6 +218,30 @@ export default function IdeaPage({ params }: { params: Promise<{ id: string }> }
               <span className="text-xs">{formatTime(idea.timestamp)}</span>
             </div>
           </div>
+
+          {/* Location card — opens Apple Maps */}
+          {idea.latitude !== null && idea.longitude !== null && (
+            <a
+              href={`https://maps.apple.com/?ll=${idea.latitude},${idea.longitude}&q=${encodeURIComponent(idea.location_name ?? "Idea")}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-4 py-3 rounded-2xl active:opacity-70 transition-opacity"
+              style={{
+                backgroundColor: "var(--card)",
+                border: "1px solid var(--border)",
+                textDecoration: "none",
+                opacity: idea.location_name ? 1 : 0.7,
+              }}
+            >
+              <MapPin size={15} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+              <span
+                className="text-xs font-medium truncate"
+                style={{ color: "var(--foreground)" }}
+              >
+                {idea.location_name ?? "Locating…"}
+              </span>
+            </a>
+          )}
 
           {/* Content card */}
           {idea.content && (

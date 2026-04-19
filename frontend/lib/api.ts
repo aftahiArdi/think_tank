@@ -16,13 +16,28 @@ export async function fetchIdeas(before?: string, limit: number = 50) {
   return handleResponse<{ ideas: import("./types").Idea[]; next_before: string | null }>(res);
 }
 
-export async function createIdea(content: string, categoryId?: number) {
+export async function createIdea(
+  content: string,
+  categoryId?: number,
+  location?: { latitude: number; longitude: number } | null,
+) {
+  const body: Record<string, unknown> = { content, category_id: categoryId };
+  if (location) {
+    body.latitude = location.latitude;
+    body.longitude = location.longitude;
+  }
   const res = await fetch(`${API_BASE}/ideas`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content, category_id: categoryId }),
+    body: JSON.stringify(body),
   });
-  return handleResponse<{ id: number; message: string }>(res);
+  return handleResponse<{
+    id: number;
+    message: string;
+    latitude: number | null;
+    longitude: number | null;
+    location_name: string | null;
+  }>(res);
 }
 
 export async function fetchIdea(id: number) {
@@ -279,4 +294,23 @@ export async function fetchStarredFeedPosts() {
 export async function fetchFeedIdea(ideaId: number) {
   const res = await fetch(`${API_BASE}/feed/ideas/${ideaId}`);
   return handleResponse<import("./types").FeedIdeaDetail>(res);
+}
+
+export async function logMood(mood_value: number) {
+  const res = await fetch(`${API_BASE}/moods`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mood_value }),
+  });
+  return handleResponse<import("./types").Mood>(res);
+}
+
+export async function fetchMoods(days: number = 30) {
+  const res = await fetch(`${API_BASE}/moods?days=${days}`);
+  return handleResponse<import("./types").MoodHistory>(res);
+}
+
+export async function deleteMood(id: number) {
+  const res = await fetch(`${API_BASE}/moods/${id}`, { method: "DELETE" });
+  return handleResponse<{ ok: true }>(res);
 }

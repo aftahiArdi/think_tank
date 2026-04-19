@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { mutate as globalMutate } from "swr";
 import { useUpload } from "@/lib/hooks/use-upload";
+import { useLocation } from "@/lib/hooks/use-location";
 import { createIdea, transcribeAudio } from "@/lib/api";
 import { Camera, Pencil, Video, X, Mic, Square, Play, Pause } from "lucide-react";
 import { toast } from "sonner";
@@ -15,7 +16,11 @@ interface CaptureSheetProps {
   onSketchOpen: () => void;
   sketchBlob: Blob | null;
   clearSketch: () => void;
-  onAdd?: (content: string) => void;
+  onAdd?: (
+    content: string,
+    categoryId?: number,
+    location?: { latitude: number; longitude: number } | null,
+  ) => void;
   /** When the sheet opens with this true, immediately kick off a voice recording.
    * Used by the "New Voice Memo" PWA home-screen shortcut so the user can tap
    * the icon and be recording in one step. Consumed once per open. */
@@ -27,6 +32,13 @@ interface AudioPreview {
   file: File;
   url: string;
   duration: number; // seconds
+}
+
+// Pre-computed blob URL so typing into the textarea doesn't recreate URLs (and
+// re-decode every image) on each keystroke — see comment on the render below.
+interface FilePreview {
+  file: File;
+  url: string;
 }
 
 function formatDuration(seconds: number) {
@@ -46,7 +58,7 @@ export function CaptureSheet({
   onAutoRecordConsumed,
 }: CaptureSheetProps) {
   const [content, setContent] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<FilePreview[]>([]);
   const [saving, setSaving] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -64,6 +76,38 @@ export function CaptureSheet({
 
   const { upload, uploading, uploadProgress } = useUpload();
   const { keyboardInset } = useVisualViewport();
+  const { prime: primeLocation, getLatest: getLatestLocation } = useLocation();
+
+  // Stable blob URL for the sketch preview. Without memoization, URL.createObjectURL
+  // would fire on every keystroke (whole sheet re-renders), forcing a fresh decode
+  // and leaking the old URL.
+  const sketchUrl = useMemo(
+    () => (sketchBlob ? URL.createObjectURL(sketchBlob) : null),
+    [sketchBlob],
+  );
+  useEffect(() => {
+    return () => {
+      if (sketchUrl) URL.revokeObjectURL(sketchUrl);
+    };
+  }, [sketchUrl]);
+
+  // Revoke all attached-file URLs when the sheet closes so they don't leak.
+  // Using a ref because we only want to revoke on the open→close transition,
+  // not every time `files` changes (which would revoke URLs still on screen).
+  const filesRef = useRef<FilePreview[]>([]);
+  filesRef.current = files;
+  useEffect(() => {
+    if (open) return;
+    filesRef.current.forEach((f) => URL.revokeObjectURL(f.url));
+  }, [open]);
+
+  // Prime GPS the instant the capture sheet opens so a fix is usually ready
+  // by the time the user taps Save. Runs in parallel with typing/recording
+  // and never blocks anything — see lib/hooks/use-location.ts.
+  useEffect(() => {
+    if (!open) return;
+    void primeLocation();
+  }, [open, primeLocation]);
 
   // Keep upload toast percentage in sync with XHR progress
   useEffect(() => {
@@ -210,28 +254,34 @@ export function CaptureSheet({
   };
 
   const handleSave = async () => {
-    const allMediaFiles = audioPreview ? [...files, audioPreview.file] : [...files];
+    const rawFiles = files.map((f) => f.file);
+    const allMediaFiles = audioPreview ? [...rawFiles, audioPreview.file] : rawFiles;
     if (!content.trim() && allMediaFiles.length === 0 && !sketchBlob) return;
     haptics.success();
 
     const capturedContent = content;
     const capturedFiles = allMediaFiles;
     const capturedSketch = sketchBlob;
+    const fix = getLatestLocation();
+    const location = fix
+      ? { latitude: fix.latitude, longitude: fix.longitude }
+      : null;
 
     // Text-only: close instantly via optimistic update
     if (capturedFiles.length === 0 && !capturedSketch) {
       setContent("");
       onOpenChange(false);
-      onAdd?.(capturedContent);
+      onAdd?.(capturedContent, undefined, location);
       return;
     }
 
     setSaving(true);
     try {
-      const result = await createIdea(capturedContent, undefined);
+      const result = await createIdea(capturedContent, undefined, location);
       const ideaId = result.id;
 
       setContent("");
+      files.forEach((f) => URL.revokeObjectURL(f.url));
       setFiles([]);
       setAudioPreview(null);
       clearSketch();
@@ -274,7 +324,12 @@ export function CaptureSheet({
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) setFiles((prev) => [...prev, ...Array.from(e.target.files!)]);
+    if (!e.target.files) return;
+    const previews: FilePreview[] = Array.from(e.target.files).map((file) => ({
+      file,
+      url: URL.createObjectURL(file),
+    }));
+    setFiles((prev) => [...prev, ...previews]);
   };
 
   const canSave = !saving && !uploading && !recording &&
@@ -347,15 +402,21 @@ export function CaptureSheet({
           {(files.length > 0 || sketchBlob) && (
             <div className="flex gap-2 overflow-x-auto pb-1">
               {files.map((f, i) => (
-                <div key={i} className="relative flex-shrink-0 w-20 h-20">
-                  {f.type.startsWith("image/") ? (
-                    <img src={URL.createObjectURL(f)} alt="" className="w-20 h-20 rounded-xl object-cover" />
+                <div key={f.url} className="relative flex-shrink-0 w-20 h-20">
+                  {f.file.type.startsWith("image/") ? (
+                    <img src={f.url} alt="" className="w-20 h-20 rounded-xl object-cover" />
                   ) : (
                     <div className="w-20 h-20 rounded-xl flex items-center justify-center text-2xl"
                       style={{ backgroundColor: "var(--card)" }}>🎥</div>
                   )}
                   <button
-                    onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                    onClick={() =>
+                      setFiles((prev) => {
+                        const removed = prev[i];
+                        if (removed) URL.revokeObjectURL(removed.url);
+                        return prev.filter((_, j) => j !== i);
+                      })
+                    }
                     className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full flex items-center justify-center"
                     style={{ backgroundColor: "var(--muted-foreground)", color: "var(--background)" }}
                   >
@@ -363,9 +424,9 @@ export function CaptureSheet({
                   </button>
                 </div>
               ))}
-              {sketchBlob && (
+              {sketchBlob && sketchUrl && (
                 <div className="relative flex-shrink-0 w-20 h-20">
-                  <img src={URL.createObjectURL(sketchBlob)} alt="sketch"
+                  <img src={sketchUrl} alt="sketch"
                     className="w-20 h-20 rounded-xl object-cover" style={{ backgroundColor: "#111" }} />
                   <button
                     onClick={clearSketch}

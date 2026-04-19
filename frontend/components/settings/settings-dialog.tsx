@@ -4,6 +4,7 @@ import type { RefObject } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ThemeSelector } from "@/components/theme/theme-selector";
 import { BiometricToggle } from "@/components/auth/biometric-toggle";
+import { LocationToggle } from "@/components/location/location-toggle";
 import { AvatarCircle } from "@/components/feed/avatar-circle";
 
 interface Props {
@@ -48,6 +49,8 @@ export function SettingsDialog({ open, onOpenChange, username, avatarUrl, avatar
           </div>
 
           <BiometricToggle />
+
+          <LocationToggle />
 
           <div>
             <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: "var(--muted-foreground)" }}>
