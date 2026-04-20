@@ -51,8 +51,20 @@ Both services run as Docker containers via Docker Compose.
 - Per-user upload directories (`uploads/<username>/`)
 - Avatar upload in settings
 
+### Mood tracking
+- Daily check-in button in the header — fluid pointer-driven slider with interpolated color and haptic ticks
+- Mood graph in Stats: 30-day history with per-entry color coding and a rolling average line
+- Each check-in optionally has a label, cause, and linked idea
+- Stored server-side per-user via `/moods` CRUD endpoints
+
+### Location
+- GPS coordinates auto-attached to every idea on save (opt-out toggle in Settings)
+- Nominatim reverse-geocodes coords to a place name in a background thread — capture POST stays fast
+- Location pill on feed cards and a full location card on the idea detail page; tap opens Apple Maps
+
 ### Stats
 - Idea count breakdown by type (text, image, video, voice, sketch, mixed)
+- Mood graph + 30-day rolling average
 - Animated count-up on load
 
 ### Themes
@@ -72,8 +84,8 @@ Both services run as Docker containers via Docker Compose.
 
 **For Docker deployment (recommended):**
 - Docker Engine 24+ and Docker Compose v2
-- ~4 GB free disk (Ollama model weights ≈ 2 GB)
 - An OpenAI API key (only if you want Whisper voice transcription)
+- (Optional) ~2 GB extra disk for Ollama model weights — only needed for daily AI recaps
 
 **For direct install (no Docker):**
 - Python 3.13+
@@ -118,10 +130,11 @@ cd think_tank
 touch notes.db
 mkdir -p uploads
 
-# 3. Build and start (flask + nextjs + ollama)
+# 3. Build and start (flask + nextjs)
 docker compose up -d --build
 
-# 4. Pull the Ollama model (one-time, for daily recaps)
+# 4. (Optional) Pull the Ollama model for AI daily recaps
+#    Skip this if you don't want AI summaries — the app works fine without it
 docker exec -it think_tank_ollama ollama pull llama3.2:3b
 
 # 5. Create users (see "Creating users" below)
@@ -193,7 +206,7 @@ Open `http://localhost:3004`.
 
 ## Creating users
 
-`create_users.py` seeds a fixed set of users (`aardi`, `alexag`, `aaronr`) and the default 7 categories for each. Passwords are entered interactively via `getpass` — they are never echoed to the terminal or saved to disk.
+`create_users.py` is an interactive script — it prompts you for usernames and passwords one at a time. No hardcoded names. Passwords are never echoed to the terminal or saved to disk. Existing users are detected and skipped, so it's safe to re-run at any time to add more users.
 
 ```bash
 # Docker
@@ -203,7 +216,7 @@ docker exec -it think_tank_api python create_users.py
 python3 create_users.py
 ```
 
-To add different usernames, edit the `USERS` list at the top of `create_users.py` before running. Existing users are detected and skipped, so it's safe to re-run.
+Each new user gets the default 7 categories seeded automatically.
 
 ## Daily email digest (cron)
 
@@ -293,6 +306,7 @@ SQLite at `notes.db` (bind-mounted, never commit). WAL mode enabled.
 | `idea_categories` | many-to-many ideas ↔ categories |
 | `shared_feed` | idea_id, shared_by, shared_at (UNIQUE on idea_id) |
 | `feed_stars` | user_id, idea_id (UNIQUE per pair) |
+| `moods` | mood_value (1–10), timestamp, user_id, label, cause, idea_id (optional link) |
 
 ## API conventions
 
@@ -321,6 +335,8 @@ frontend/
     auth/                           BiometricGate, PasswordGate, BiometricToggle
     ideas/                          IdeaCard, IdeaFeed, CaptureSheet, Flashback
     feed/                           FeedView, FeedPostCard, AvatarCircle, ShareConfirmSheet
+    mood/                           MoodSlider, MoodSheet, MoodGraph, MoodAverage, MoodButton
+    location/                       LocationPill, LocationToggle
     stats/                          StatsView
     ui/                             GlowCard, VoiceMemoPlayer, YouTubePreview, LinkPreview
   lib/

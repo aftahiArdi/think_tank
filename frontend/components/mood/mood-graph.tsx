@@ -31,12 +31,19 @@ export function MoodGraph({ moods, days }: MoodGraphProps) {
       .filter((m) => m.ms >= startMs)
       .sort((a, b) => a.ms - b.ms);
 
-    const range = Math.max(1, now - startMs);
     const innerW = WIDTH - PADDING_X * 2;
     const innerH = HEIGHT - PADDING_TOP - PADDING_BOTTOM;
 
+    // Use actual data bounds so points always spread across the full width
+    const dataMin = sorted.length > 0 ? sorted[0].ms : startMs;
+    const dataMax = sorted.length > 1 ? sorted[sorted.length - 1].ms : dataMin + 1;
+    const padding = sorted.length > 1 ? (dataMax - dataMin) * 0.05 : 12 * 60 * 60 * 1000;
+    const rangeStart = dataMin - padding;
+    const rangeEnd = dataMax + padding;
+    const range = Math.max(1, rangeEnd - rangeStart);
+
     const pts = sorted.map((m) => {
-      const x = PADDING_X + ((m.ms - startMs) / range) * innerW;
+      const x = PADDING_X + ((m.ms - rangeStart) / range) * innerW;
       const y = PADDING_TOP + ((7 - m.mood_value) / 6) * innerH;
       return { x, y, value: m.mood_value, id: m.id };
     });
@@ -57,7 +64,7 @@ export function MoodGraph({ moods, days }: MoodGraphProps) {
     const ticks: { x: number; label: string }[] = [];
     const tickCount = 4;
     for (let i = 0; i <= tickCount; i++) {
-      const t = startMs + (range * i) / tickCount;
+      const t = rangeStart + (range * i) / tickCount;
       const d = new Date(t);
       const label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
       ticks.push({
