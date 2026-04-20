@@ -123,25 +123,23 @@ MAIL_DEFAULT_SENDER=you@example.com
 ```bash
 git clone <repo-url> think_tank
 cd think_tank
-
-# 1. Create .env manually — see Environment section above
-
-# 2. Create empty db file + uploads dir so the bind mounts work
-touch notes.db
-mkdir -p uploads
-
-# 3. Build and start (flask + nextjs)
-docker compose up -d --build
-
-# 4. (Optional) Pull the Ollama model for AI daily recaps
-#    Skip this if you don't want AI summaries — the app works fine without it
-docker exec -it think_tank_ollama ollama pull llama3.2:3b
-
-# 5. Create users (see "Creating users" below)
-docker exec -it think_tank_api python create_users.py
+./setup.sh
 ```
 
-**Shortcut for rebuilds:** after the initial deploy, `./deploy.sh` rebuilds both images and force-recreates the containers — use it instead of the manual `docker compose build` steps.
+`setup.sh` does everything: generates a `COOKIE_SECRET`, creates `.env`, initialises `notes.db` and `uploads/`, builds and starts the containers, then walks you through creating your first user. That's it.
+
+**Want AI daily recaps?** After setup, opt in to Ollama:
+
+```bash
+docker compose --profile ollama up -d
+docker exec -it think_tank_ollama ollama pull llama3.2:3b
+```
+
+**Rebuilding after code changes:**
+
+```bash
+./deploy.sh   # rebuilds both images and force-recreates (includes Ollama on this server)
+```
 
 Services:
 - Frontend: `http://localhost:3004`

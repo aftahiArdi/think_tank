@@ -12,15 +12,14 @@ services:
       - /home/ardi/Projects/think_tank/uploads:/app/uploads
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3.2:3b
-    depends_on:
-      - ollama
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
     restart: always
 
   ollama:
     image: ollama/ollama:latest
     container_name: think_tank_ollama
+    profiles: [ollama]
     # Not exposed to host — only the flask container talks to it on the internal network.
     expose:
       - "11434"

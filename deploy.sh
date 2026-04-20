@@ -1,16 +1,13 @@
 #!/bin/bash
 set -e
 
-cd /home/ardi/think_tank
+cd /home/ardi/Projects/think_tank
 
-echo "Building API image..."
-docker build -t think_tank_api -f Dockerfile.api .
-
-echo "Building frontend image..."
-docker build -t think_tank_frontend -f frontend/Dockerfile frontend/
+echo "Building images..."
+docker compose --profile ollama build --no-cache
 
 echo "Restarting containers..."
-docker compose up -d --force-recreate
+docker compose --profile ollama up -d --force-recreate
 
 echo "Done. Status:"
-docker compose ps
+docker compose --profile ollama ps
